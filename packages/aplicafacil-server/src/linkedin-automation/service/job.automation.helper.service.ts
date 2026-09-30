@@ -54,6 +54,8 @@ export class JobAutomationHelperService {
 
     dto.rawContent = job.rawContent;
     dto.extractedAt = new Date();
+    dto.profileId = job.profileId;
+    dto.personId = job.personId;
 
     return dto;
   }

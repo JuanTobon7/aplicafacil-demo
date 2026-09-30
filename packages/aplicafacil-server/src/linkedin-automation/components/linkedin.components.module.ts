@@ -11,8 +11,9 @@ import { EasyApplyComponent } from './easy-apply/contract/easy.apply.component';
 import { EasyApplyComponentImpl } from './easy-apply/impl/easy.apply.component.impl';
 import { EasyApplyButtonClicker } from './easy-apply/contract/easy.apply.button.clicker';
 import { EasyApplyButtonClickerImpl } from './easy-apply/impl/easy.apply.button.clicker.impl';
-import { EasyApplyFormFiller } from './easy-apply/contract/easy.apply.form.filler';
-import { EasyApplyFormFillerImpl } from './easy-apply/impl/easy.apply.form.filler.impl';
+import { AiFormFiller } from './ai-form/contract/ai.form.filler';
+import { AiFormFillerImpl } from './ai-form/impl/ai.form.filler.impl';
+import { JobRecommendationModule } from '../../jobs/module/job.recommendation.module';
 import { CaptchaDetector } from './captcha/contract/captcha.detector';
 import { CaptchaDetectorImpl } from './captcha/impl/captcha.detector.impl';
 import { SessionStore } from './session-store/contract/session.store';
@@ -20,6 +21,8 @@ import { SessionStoreImpl } from './session-store/impl/session.store.impl';
 import { HumanBehaviorService } from '../common/human-behavior.service';
 
 @Module({
+  // FillFormUseCase (IA + tools MCP) para llenar formularios de postulación
+  imports: [JobRecommendationModule],
   providers: [
     HumanBehaviorService,
     {
@@ -55,8 +58,8 @@ import { HumanBehaviorService } from '../common/human-behavior.service';
       useClass: EasyApplyButtonClickerImpl,
     },
     {
-      provide: EasyApplyFormFiller,
-      useClass: EasyApplyFormFillerImpl,
+      provide: AiFormFiller,
+      useClass: AiFormFillerImpl,
     },
   ],
   exports: [
@@ -68,6 +71,7 @@ import { HumanBehaviorService } from '../common/human-behavior.service';
     CaptchaDetector,
     SessionStore,
     HumanBehaviorService,
+    AiFormFiller,
   ],
 })
 export class LinkedInComponentsModule {}

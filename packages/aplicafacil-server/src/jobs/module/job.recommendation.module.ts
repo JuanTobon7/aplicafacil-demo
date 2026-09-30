@@ -70,6 +70,6 @@ import { JobModel } from '../models/job.model';
       useFactory: () => new NestLoggerAdapter('FillFormUseCase'),
     },
   ],
-  exports: ['JobsService', 'ValidateJobsService'],
+  exports: ['JobsService', 'ValidateJobsService', FillFormUseCase],
 })
 export class JobRecommendationModule {}

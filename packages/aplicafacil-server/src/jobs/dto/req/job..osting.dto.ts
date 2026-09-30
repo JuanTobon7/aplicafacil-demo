@@ -56,4 +56,14 @@ export class JobPostingDto {
   @IsDate()
   @Type(() => Date)
   extractedAt?: Date;
+
+  /** Perfil del candidato que aplica (la IA lo consulta vía tools MCP). */
+  @IsOptional()
+  @IsString()
+  profileId?: string;
+
+  /** Persona que aplica (datos de contacto, vía tools MCP). */
+  @IsOptional()
+  @IsString()
+  personId?: string;
 }
