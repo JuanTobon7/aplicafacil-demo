@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ProfileModel } from '../../profiles/models/profiles.model';
 import { ApplyJobProcessor } from '../worker/apply-job.processor';
 import { JobApplyerQueue } from '../worker/job.applyer.queu';
 import { QueuePoller } from '../worker/queue.poller';
@@ -20,6 +22,7 @@ import { JobAutomationHelperService } from '../service/job.automation.helper.ser
  */
 @Module({
   imports: [
+    TypeOrmModule.forFeature([ProfileModel]),
     RedisModule,
     LinkedInComponentsModule,
     JobRecommendationModule,
@@ -39,6 +42,7 @@ import { JobAutomationHelperService } from '../service/job.automation.helper.ser
   ],
   exports: [
     JobApplyerQueue,
+    QueuePoller,
     'ScrapingLinkldnService',
     JobAutomationHelperService,
   ],

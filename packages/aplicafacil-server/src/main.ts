@@ -4,7 +4,13 @@ import { ValidationPipe } from '@nestjs/common/pipes/validation.pipe';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Por defecto solo log/warn/error; LOG_DEBUG=true muestra también debug/verbose.
+  const app = await NestFactory.create(AppModule, {
+    logger:
+      process.env.LOG_DEBUG === 'true'
+        ? ['log', 'warn', 'error', 'fatal', 'debug', 'verbose']
+        : ['log', 'warn', 'error', 'fatal'],
+  });
   app.setGlobalPrefix('api/v1');
   app.use(cookieParser());
   app.enableCors({

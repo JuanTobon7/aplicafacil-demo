@@ -98,7 +98,7 @@ export class EasyApplyButtonClickerImpl implements EasyApplyButtonClicker {
     hrefs: (string | null)[];
     found: boolean;
   }): void {
-    this.logger.log(
+    this.logger.debug(
       `Easy Apply candidates (${debug.total}, found=${debug.found}): ` +
         `texts=${JSON.stringify(debug.texts)} ` +
         `labels=${JSON.stringify(debug.labels)} ` +
@@ -109,8 +109,6 @@ export class EasyApplyButtonClickerImpl implements EasyApplyButtonClicker {
   async click(page: Page): Promise<boolean> {
     // Log inicial: estado de la página justo después de cargar la oferta.
     // Así vemos qué botones hay aunque luego el waitForFunction falle.
-    this.logDebug(await this.captureDebug(page));
-
     // Esperamos a que aparezca el botón porque LinkedIn renderiza el
     // contenido dinámicamente después de 'domcontentloaded'.
     // 15s máximo: si no aparece, mejor fallar rápido y pasar a la
@@ -162,7 +160,7 @@ export class EasyApplyButtonClickerImpl implements EasyApplyButtonClicker {
       return false;
     });
 
-    this.logger.log(`Easy Apply button clicked: ${result}`);
+    this.logger.debug(`Easy Apply button clicked: ${result}`);
 
     // Pausa humana tras el click para dejar que el modal se abra.
     await this.human.wait();

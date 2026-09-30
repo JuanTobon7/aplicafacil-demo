@@ -15,8 +15,6 @@ export class JobRecommendationController {
     ) {
         const response = this.service.fillFormFields(body);
         response.then(r => { 
-            console.log("Body", body)
-            console.log("Response LLM:", r)
             res.status(200).json({
                 message: 'Recomendaciones generadas exitosamente',
                 recommendations: r.fields

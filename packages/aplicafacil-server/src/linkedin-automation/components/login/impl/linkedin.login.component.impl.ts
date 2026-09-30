@@ -27,7 +27,7 @@ export class LinkedInLoginComponentImpl
     page: Page,
     credentials: LinkedInCredentials,
   ): Promise<void> {
-    this.logger.log('Opening LinkedIn login...');
+    this.logger.debug('Opening LinkedIn login...');
 
     /*
      * Restaurar la sesión guardada (cookies) antes de navegar para que
@@ -64,12 +64,12 @@ export class LinkedInLoginComponentImpl
     await page.waitForSelector(emailSelector, {
       timeout: 30_000,
     });
-    this.logger.log('Email input encontrado.');
+    this.logger.debug('Email input encontrado.');
 
     await page.waitForSelector(passwordSelector, {
       timeout: 30_000,
     });
-    this.logger.log('Password input encontrado.');
+    this.logger.debug('Password input encontrado.');
 
     /*
      * Fill the inputs using the native value setter.
@@ -83,7 +83,7 @@ export class LinkedInLoginComponentImpl
     await this.human.wait();
     await this.fillInput(page, passwordSelector, credentials.password);
 
-    this.logger.log('Credentials filled.');
+    this.logger.debug('Credentials filled.');
 
     // Pausa humana antes de pulsar el botón de login.
     await this.human.wait();
@@ -130,7 +130,7 @@ export class LinkedInLoginComponentImpl
       throw new Error('LinkedIn login button not found.');
     }
 
-    this.logger.log('Botón "Iniciar sesión" encontrado y clickeado.');
+    this.logger.debug('Botón "Iniciar sesión" encontrado y clickeado.');
 
     // Pausa humana tras el click antes de esperar el resultado.
     await this.human.wait();

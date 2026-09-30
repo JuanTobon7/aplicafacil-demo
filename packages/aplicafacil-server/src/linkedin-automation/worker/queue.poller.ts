@@ -31,6 +31,11 @@ export class QueuePoller {
     }, this.POLL_INTERVAL_MS);
   }
 
+  /** true mientras se está procesando un trabajo de la cola. */
+  isProcessing(): boolean {
+    return this.processing;
+  }
+
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);

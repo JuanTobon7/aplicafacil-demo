@@ -125,7 +125,7 @@ export class JobSearchComponentImpl implements JobSearchComponent {
       `${SELECTORS.RESULTS_CONTAINER} ${SELECTORS.JOB_CARD}`,
     );
 
-    this.logger.log(`Found ${cards.length} job cards in the results list.`);
+    this.logger.debug(`Found ${cards.length} job cards in the results list.`);
 
     for (const card of cards) {
       const link = await card.$(SELECTORS.JOB_URL);

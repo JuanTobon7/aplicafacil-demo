@@ -27,11 +27,16 @@ export function registerTools(server: McpServer, tools: McpToolDefinition[]): vo
       tool.name,
       { description: tool.description, inputSchema: tool.inputSchema },
       async (args: any) => {
-        logger.debug(`MCP tool "${tool.name}" invocada`, args);
+        logger.info(`🔧 tools/call "${tool.name}" ${JSON.stringify(args)}`);
+        const started = Date.now();
         try {
           const result = await tool.handler(args);
+          const text = JSON.stringify(result);
+          logger.info(
+            `🔧 "${tool.name}" OK en ${Date.now() - started}ms (${text.length} caracteres)`,
+          );
           return {
-            content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+            content: [{ type: 'text' as const, text }],
           };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

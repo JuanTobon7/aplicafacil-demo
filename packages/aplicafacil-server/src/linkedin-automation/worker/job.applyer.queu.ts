@@ -18,15 +18,28 @@ export class JobApplyerQueue {
   constructor(private readonly redisService: RedisService) {}
 
   /**
-   * Encola una lista de vacantes para su aplicación.
+   * Encola una lista de vacantes para su aplicación, omitiendo las que ya
+   * están en la cola (el cron re-encola cada 5 min y generaba duplicados).
    * Devuelve la cantidad de trabajos encolados.
    */
   async enqueueJobs(jobs: JobModel[]): Promise<number> {
-    if (jobs.length === 0) {
+    const queued = new Set(
+      (await this.redisService.queuePeekAll(LINKEDIN_APPLY_QUEUE)).map(
+        (raw) => this.jobIdOf(raw),
+      ),
+    );
+    const fresh = jobs.filter((job) => {
+      if (queued.has(job.id)) return false;
+      queued.add(job.id);
+      return true;
+    });
+
+    if (fresh.length === 0) {
+      this.logger.debug('[Queue] All pending jobs are already queued.');
       return 0;
     }
 
-    const payloads = jobs.map((job) =>
+    const payloads = fresh.map((job) =>
       JSON.stringify({
         jobId: job.id,
         url: job.url ?? '',
@@ -43,6 +56,26 @@ export class JobApplyerQueue {
       `[Queue] Enqueued ${payloads.length} jobs for application (queue length: ${length ?? 0}).`,
     );
     return payloads.length;
+  }
+
+  /**
+   * Reconstruye la cola desde cero con las vacantes dadas.
+   * La BD es la fuente de verdad: descarta entradas viejas (vacantes ya
+   * procesadas o eliminadas) y duplicados acumulados.
+   */
+  async rebuild(jobs: JobModel[]): Promise<number> {
+    const stale = await this.getPendingCount();
+    await this.redisService.del(LINKEDIN_APPLY_QUEUE);
+    this.logger.log(`[Queue] Queue rebuilt (discarded ${stale} old entries).`);
+    return this.enqueueJobs(jobs);
+  }
+
+  private jobIdOf(raw: string): string | null {
+    try {
+      return (JSON.parse(raw) as ApplyJobData).jobId;
+    } catch {
+      return null;
+    }
   }
 
   /**

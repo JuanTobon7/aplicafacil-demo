@@ -10,8 +10,54 @@ import {
   AiFormOutcome,
 } from '../../ai-form/contract/ai.form.filler';
 
-/** Contenedor del formulario de Easy Apply de LinkedIn. */
-const EASY_APPLY_ROOT = '.jobs-easy-apply-modal';
+/**
+ * Detecta dónde quedó el formulario interno de LinkedIn tras pulsar Easy Apply
+ * y devuelve su selector (o null si aún no aparece). LinkedIn tiene varias
+ * variantes: modal clásico, modal nuevo, diálogo genérico o el flujo SDUI que
+ * navega a /apply/?openSDUIApplyFlow=true como página completa.
+ * Autocontenida: se ejecuta dentro del navegador.
+ */
+function detectEasyApplyRoot(): string | null {
+  // Busca también dentro de shadow DOM abiertos (LinkedIn monta el modal de
+  // Easy Apply dentro de un shadowRoot, invisible para document.querySelector).
+  const shadowScopes: Array<Document | ShadowRoot> = [document];
+  for (let i = 0; i < shadowScopes.length; i++) {
+    shadowScopes[i].querySelectorAll('*').forEach((el) => {
+      if (el.shadowRoot) shadowScopes.push(el.shadowRoot);
+    });
+  }
+  const deepQuery = (sel: string): Element | null => {
+    for (const s of shadowScopes) {
+      const found = s.querySelector(sel);
+      if (found) return found;
+    }
+    return null;
+  };
+  const hasForm = (el: Element) =>
+    (el as HTMLElement).getClientRects().length > 0 &&
+    !!el.querySelector('input, select, textarea, button');
+
+  const selectors = [
+    // Diseño SDUI (2026): <dialog open data-testid="dialog"> nativo con la
+    // pantalla data-sdui-screen="…jobs.easyapply.EasyApply" dentro.
+    'dialog[open]:has([data-sdui-screen*="EasyApply"])',
+    'dialog[open]',
+    '.jobs-easy-apply-modal',
+    '[data-test-modal-id="easy-apply-modal"]',
+    '.jobs-easy-apply-content',
+    '[role="dialog"]',
+  ];
+  for (const selector of selectors) {
+    const el = deepQuery(selector);
+    if (el && hasForm(el)) return selector;
+  }
+
+  if (/\/apply\//.test(location.pathname) || location.search.includes('openSDUIApplyFlow')) {
+    const main = deepQuery('main');
+    if (main && hasForm(main)) return 'main';
+  }
+  return null;
+}
 
 /**
  * Busca el botón "Solicitar"/"Apply" de una oferta con aplicación EXTERNA
@@ -38,6 +84,19 @@ function markExternalApplyButton(): boolean {
   return true;
 }
 
+type EasyApplyStart =
+  | { kind: 'internal'; root: string }
+  | { kind: 'external'; page: Page }
+  | { kind: 'none' };
+
+function isLinkedInUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.endsWith('linkedin.com');
+  } catch {
+    return true;
+  }
+}
+
 @Injectable()
 export class EasyApplyComponentImpl implements EasyApplyComponent {
   private readonly logger = new Logger(EasyApplyComponentImpl.name);
@@ -49,8 +108,6 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
   ) {}
 
   async apply(page: Page, job: JobPostingDto): Promise<void> {
-    this.logger.log(`Applying to: ${job.job.title}`);
-
     // NOTA: 'domcontentloaded' en lugar de 'networkidle2' (LinkedIn mantiene
     // conexiones persistentes que impiden alcanzar 'idle' en la red).
     await page.goto(job.source.url, {
@@ -62,9 +119,21 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
     await this.human.wait();
 
     const ctx = this.toContext(job);
-    const outcome = (await this.tryEasyApply(page))
-      ? await this.aiFormFiller.fillUntilDone(page, EASY_APPLY_ROOT, ctx)
-      : await this.applyExternally(page, ctx);
+    const start = await this.startEasyApply(page);
+
+    let outcome: AiFormOutcome;
+    switch (start.kind) {
+      case 'internal':
+        outcome = await this.aiFormFiller.fillUntilDone(page, start.root, ctx);
+        break;
+      case 'external':
+        // El botón pulsado resultó ser una aplicación externa (p.ej. ATS)
+        outcome = await this.fillExternal(page, start.page, ctx);
+        break;
+      case 'none':
+        outcome = await this.applyExternally(page, ctx);
+        break;
+    }
 
     this.logOutcome(job, outcome);
 
@@ -75,17 +144,62 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
     }
   }
 
-  /** Abre el modal de Easy Apply. false si la oferta no tiene Easy Apply. */
-  private async tryEasyApply(page: Page): Promise<boolean> {
+  /**
+   * Pulsa Easy Apply y observa qué pasa:
+   * - aparece el formulario interno → `internal` con su contenedor;
+   * - se abre otra pestaña o la página sale de LinkedIn → `external`
+   *   (el botón era de una aplicación externa, p.ej. SmartRecruiters);
+   * - no hay botón de Easy Apply → `none` (se busca "Solicitar" externo).
+   */
+  private async startEasyApply(page: Page): Promise<EasyApplyStart> {
+    const newTab = this.waitForNewTab(page, 30_000);
+
+    let clicked = false;
     try {
-      if (!(await this.buttonClicker.click(page))) return false;
-      await page.waitForSelector(EASY_APPLY_ROOT, { timeout: 30_000 });
-      await this.human.wait();
-      return true;
+      clicked = await this.buttonClicker.click(page);
     } catch {
-      this.logger.log('No Easy Apply available, trying external application');
-      return false;
+      clicked = false;
     }
+    if (!clicked) {
+      this.logger.log('No Easy Apply button, trying external application');
+      return { kind: 'none' };
+    }
+
+    const winner = await Promise.race([
+      page
+        .waitForFunction(detectEasyApplyRoot, { timeout: 30_000 })
+        .then(() => 'form' as const)
+        .catch(() => null),
+      newTab,
+    ]);
+
+    if (winner === 'form') {
+      const root = (await page.evaluate(detectEasyApplyRoot)) ?? 'body';
+      this.logger.log(`Easy Apply form detected in "${root}" (url: ${page.url()})`);
+      await this.human.wait();
+      return { kind: 'internal', root };
+    }
+    if (winner) {
+      this.logger.log(`Apply button opened an external tab: ${winner.url()}`);
+      return { kind: 'external', page: winner };
+    }
+    if (!isLinkedInUrl(page.url())) {
+      this.logger.log(`Apply button navigated to an external site: ${page.url()}`);
+      return { kind: 'external', page };
+    }
+
+    // Nada apareció: mostrar qué hay en la página antes de fallar
+    await this.aiFormFiller.logInventory(page, 'body');
+    throw new Error(`Easy Apply was clicked but no form appeared (url: ${page.url()}).`);
+  }
+
+  /** Pestaña nueva abierta desde `page` (o null si no se abre ninguna a tiempo). */
+  private waitForNewTab(page: Page, timeoutMs: number): Promise<Page | null> {
+    return page
+      .browser()
+      .waitForTarget((t) => t.opener() === page.target(), { timeout: timeoutMs })
+      .then((t) => t.page())
+      .catch(() => null);
   }
 
   /**
@@ -94,19 +208,23 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
    */
   private async applyExternally(page: Page, ctx: AiFormContext): Promise<AiFormOutcome> {
     if (!(await page.evaluate(markExternalApplyButton))) {
+      await this.aiFormFiller.logInventory(page, 'body');
       throw new Error('No apply button found (neither Easy Apply nor external).');
     }
     const button = await page.$('[data-af-external]');
     if (!button) throw new Error('External apply button disappeared.');
 
-    const newTab = page
-      .browser()
-      .waitForTarget((t) => t.opener() === page.target(), { timeout: 15_000 })
-      .then((t) => t.page())
-      .catch(() => null);
-
+    const newTab = this.waitForNewTab(page, 15_000);
     await this.human.clickElement(button);
-    const externalPage = (await newTab) ?? page;
+    return this.fillExternal(page, (await newTab) ?? page, ctx);
+  }
+
+  /** Recorre el formulario del sitio externo y cierra su pestaña al terminar. */
+  private async fillExternal(
+    page: Page,
+    externalPage: Page,
+    ctx: AiFormContext,
+  ): Promise<AiFormOutcome> {
     this.logger.log(`External application at ${externalPage.url()}`);
 
     try {
@@ -144,6 +262,7 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
       },
       profileId: job.profileId,
       personId: job.personId,
+      resumePath: job.resumePath,
     };
   }
 

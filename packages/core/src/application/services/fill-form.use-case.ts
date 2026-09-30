@@ -68,6 +68,9 @@ export class FillFormUseCase {
 
       // 3) Solo si hay campos nuevos/cambiados se invoca al LLM
       if (missingFields.length > 0) {
+        this.logger.info(
+          `FillForm: ${body.fields.length - missingFields.length} campos desde caché, ${missingFields.length} al LLM`,
+        );
         const results = await this.analyzeWithLlm({
           ...body,
           fields: missingFields,
@@ -80,6 +83,9 @@ export class FillFormUseCase {
           );
           if (index >= 0) {
             cachedByField.set(result.fieldName, result);
+            // Un "no sé" (value null) no se cachea: puede deberse a un fallo
+            // transitorio (p.ej. una tool MCP caída) y debe re-preguntarse.
+            if (result.value == null) continue;
             await this.cache.set(
               missingKeys[index],
               JSON.stringify(result),

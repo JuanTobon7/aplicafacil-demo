@@ -57,7 +57,7 @@ export class JobDetailExtractorComponentImpl
     page: Page,
     url: string,
   ): Promise<JobPostingDto | null> {
-    this.logger.log(`Extracting job from panel: ${url}`);
+    this.logger.debug(`Extracting job from panel: ${url}`);
 
     try {
       // Esperar a que cargue el detalle de la vacante en el panel derecho.

@@ -49,6 +49,11 @@ export class ToolCallingAgent implements AiCompletionPort {
       const response = await this.model.chat({ messages, tools });
 
       if (response.toolCalls.length === 0) {
+        this.logger.info(
+          step === 0
+            ? 'LLM respondió SIN usar tools MCP (decidió que no necesitaba datos del candidato)'
+            : `LLM respondió tras ${step} ronda(s) de tools MCP`,
+        );
         return response.content ?? '';
       }
 
@@ -78,8 +83,8 @@ export class ToolCallingAgent implements AiCompletionPort {
   private async discoverTools(): Promise<ToolDefinition[]> {
     try {
       const tools = await this.tools.listTools();
-      this.logger.debug(
-        `Tools disponibles: ${tools.map((t) => t.name).join(', ') || '(ninguna)'}`,
+      this.logger.info(
+        `Tools MCP ofrecidas al LLM: ${tools.map((t) => t.name).join(', ') || '(ninguna)'}`,
       );
       return tools;
     } catch (error) {
@@ -99,11 +104,13 @@ export class ToolCallingAgent implements AiCompletionPort {
       return `Error: argumentos inválidos para "${call.name}" (no es JSON válido)`;
     }
 
-    this.logger.info(`LLM invoca tool "${call.name}"`, args);
+    this.logger.info(`LLM invoca tool MCP "${call.name}" ${JSON.stringify(args)}`);
     try {
       const result = await this.tools.callTool(call.name, args);
       if (result.isError) {
         this.logger.warn(`Tool "${call.name}" devolvió error: ${result.content}`);
+      } else {
+        this.logger.info(`Tool "${call.name}" respondió ${result.content.length} caracteres`);
       }
       return result.content;
     } catch (error) {

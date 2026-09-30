@@ -13,8 +13,12 @@ import { logger } from './logger/logger.js';
  *   - stdio con `--stdio`: para clientes locales (Claude Desktop, Inspector).
  */
 async function main() {
+  if (!process.env.JWT_SECRET) {
+    logger.warn('JWT_SECRET no definido: las consultas al backend irán sin autenticación (401)');
+  }
   const backend = new BackendClient(
     process.env.BACKEND_URL ?? 'http://localhost:3000/api/v1',
+    process.env.JWT_SECRET,
   );
   const createServer = () => createMcpServer({ backend });
 

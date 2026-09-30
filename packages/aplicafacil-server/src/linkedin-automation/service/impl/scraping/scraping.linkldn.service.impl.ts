@@ -3,7 +3,10 @@ import { Browser, Page } from 'puppeteer';
 import { ScrapingLinkldnService } from '../../contract/scraping.linkldn.service';
 import { LinkedInSearchParams } from '../../../dto/params.lindkln.search';
 import { JobPostingDto } from 'src/jobs/dto/req/job..osting.dto';
-import { BrowserManager } from '../../../components/browser-manager/contract/browser.manager';
+import {
+  BrowserManager,
+  BrowserTab,
+} from '../../../components/browser-manager/contract/browser.manager';
 import { LinkedInLoginComponent } from '../../../components/login/contract/linkedin.login.component';
 import { JobSearchComponent } from '../../../components/job-search/contract/job.search.component';
 import { JobDetailExtractorComponent } from '../../../components/job-detail/contract/job.detail.extractor.component';
@@ -13,10 +16,14 @@ import { CaptchaDetector } from '../../../components/captcha/contract/captcha.de
 @Injectable()
 export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
   private readonly logger = new Logger(ScrapingLinkldnServiceImpl.name);
-  private browser: Browser | null = null;
-  private page: Page | null = null;
-  /** Pestaña separada para búsqueda (la principal es exclusiva de la cola). */
-  private searchPage: Page | null = null;
+  /**
+   * Navegador en el que ya se inició sesión. Las cookies se comparten entre
+   * pestañas, así que basta un login por instancia de navegador; si el
+   * BrowserManager lanza uno nuevo, se vuelve a iniciar sesión.
+   */
+  private loggedInBrowser: Browser | null = null;
+  /** Login en curso (evita dos logins simultáneos desde el worker y el cron). */
+  private loginInFlight: Promise<void> | null = null;
 
   constructor(
     @Inject(BrowserManager)
@@ -34,39 +41,47 @@ export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
   ) {}
 
   /**
-   * Abre el perfil de LinkedIn iniciando sesión con las credenciales dadas.
+   * Abre la pestaña del consumidor y garantiza la sesión de LinkedIn.
    *
-   * Idempotente: si el navegador ya está abierto y logueado, no hace nada.
-   * Esto permite que la cola reutilice la misma sesión sin re-loguear.
+   * Idempotente: si el navegador ya tiene sesión, solo asegura la pestaña.
+   * Si el BrowserManager relanzó el navegador, inicia sesión de nuevo (las
+   * cookies guardadas por el SessionStore suelen evitar el login completo).
    */
-  async openLinkdlnProfile({
-    email,
-    password,
-  }: {
-    email: string;
-    password: string;
-  }): Promise<void> {
-    if (this.page) {
-      this.logger.log('LinkedIn profile already open. Reusing session.');
+  async openLinkdlnProfile(
+    credentials: { email: string; password: string },
+    tab: BrowserTab = 'apply',
+  ): Promise<void> {
+    const page = await this.browserManager.getPage(tab);
+
+    if (page.browser() === this.loggedInBrowser) {
+      this.logger.debug(`LinkedIn session already open. Reusing it for tab "${tab}".`);
       return;
     }
 
+    this.loginInFlight ??= this.login(page, credentials).finally(() => {
+      this.loginInFlight = null;
+    });
+    await this.loginInFlight;
+  }
+
+  private async login(
+    page: Page,
+    credentials: { email: string; password: string },
+  ): Promise<void> {
     this.logger.log('Opening LinkedIn profile...');
-
-    if (!this.browser) {
-      this.browser = await this.browserManager.launch();
-    }
-
-    this.page = await this.browserManager.newPage(this.browser);
-
-    await this.loginComponent.login(this.page, { email, password });
+    await this.loginComponent.login(page, credentials);
 
     // Tras el login, comprobamos que LinkedIn no haya interpuesto un
     // CAPTCHA (el guard del BrowserManager ya lo pausó esperando a que
     // un humano lo resuelva en el navegador visible).
-    await this.assertNoCaptcha(this.page);
+    await this.assertNoCaptcha(page);
 
+    this.loggedInBrowser = page.browser();
     this.logger.log('LinkedIn profile opened successfully.');
+  }
+
+  async releaseTab(tab: BrowserTab): Promise<void> {
+    await this.browserManager.releasePage(tab);
   }
 
   /**
@@ -103,7 +118,7 @@ export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
   async getJobsToApply(params: LinkedInSearchParams): Promise<JobPostingDto[]> {
     this.logger.log('Getting jobs to apply...');
 
-    const page = await this.getSearchPage();
+    const page = await this.requireSessionPage('search');
 
     // Si LinkedIn interpuso un CAPTCHA en la pestaña de búsqueda, abortamos
     // de forma controlada (el guard del BrowserManager ya lo pausó esperando
@@ -154,7 +169,7 @@ export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
   async searchJob(url: string): Promise<JobPostingDto | null> {
     this.logger.log(`Searching job: ${url}`);
 
-    const page = this.requirePage();
+    const page = await this.requireSessionPage('apply');
 
     // Si LinkedIn interpuso un CAPTCHA, abortamos de forma controlada.
     await this.assertNoCaptcha(page);
@@ -168,9 +183,7 @@ export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
    * abra una pestaña separada y no pise la postulación en curso.
    */
   async resolveFillFormAndApply(job: JobPostingDto): Promise<void> {
-    this.logger.log(`Resolving fill form and applying to: ${job.job.title}`);
-
-    const page = this.requirePage();
+    const page = await this.requireSessionPage('apply');
 
     // Si LinkedIn interpuso un CAPTCHA al abrir la vacante, abortamos de
     // forma controlada (el guard del BrowserManager ya lo pausó esperando
@@ -181,44 +194,27 @@ export class ScrapingLinkldnServiceImpl implements ScrapingLinkldnService {
   }
 
   /**
-   * Cierra el navegador.
+   * Cierra el navegador y todas sus pestañas.
    */
   async close(): Promise<void> {
-    if (this.browser) {
-      await this.browserManager.close(this.browser);
-      this.browser = null;
-      this.page = null;
-      this.searchPage = null;
-    }
+    await this.browserManager.closeAll();
+    this.loggedInBrowser = null;
   }
 
   /**
-   * Retorna la página a usar para búsqueda.
-   * SIEMPRE abre/usa una pestaña separada para no interferir con la cola.
+   * Retorna la pestaña del consumidor, exigiendo una sesión de LinkedIn
+   * activa (lanza error si hay que llamar antes a openLinkdlnProfile).
    */
-  private async getSearchPage(): Promise<Page> {
-    if (!this.browser) {
+  private async requireSessionPage(tab: BrowserTab): Promise<Page> {
+    if (!this.loggedInBrowser?.connected) {
       throw new Error(
-        'LinkedIn browser is not open. Call openLinkdlnProfile first.',
+        `LinkedIn session is not open. Call openLinkdlnProfile(credentials, '${tab}') first.`,
       );
     }
-
-    if (!this.searchPage) {
-      this.logger.log('Opening new tab for job search...');
-      this.searchPage = await this.browserManager.newPage(this.browser);
+    const page = await this.browserManager.getPage(tab);
+    if (page.browser() !== this.loggedInBrowser) {
+      throw new Error('Browser was relaunched. Call openLinkdlnProfile again.');
     }
-    return this.searchPage;
-  }
-
-  /**
-   * Retorna la página actual o lanza un error si no está abierta.
-   */
-  private requirePage(): Page {
-    if (!this.page) {
-      throw new Error(
-        'LinkedIn page is not open. Call openLinkdlnProfile first.',
-      );
-    }
-    return this.page;
+    return page;
   }
 }

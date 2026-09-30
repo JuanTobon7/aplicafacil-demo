@@ -17,8 +17,14 @@ export function createExpressApp(createServer: () => McpServer): Express {
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: '10mb' }));
 
+  // Una línea por mensaje MCP recibido (initialize, tools/list, tools/call…)
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    logger.debug(`📨 ${req.method} ${req.path}`);
+    const messages = Array.isArray(req.body) ? req.body : req.body ? [req.body] : [];
+    for (const msg of messages) {
+      if (typeof msg?.method !== 'string' || msg.method.startsWith('notifications/')) continue;
+      const tool = msg.method === 'tools/call' ? ` "${msg.params?.name}"` : '';
+      logger.info(`📨 MCP ← ${msg.method}${tool}`);
+    }
     next();
   });
 

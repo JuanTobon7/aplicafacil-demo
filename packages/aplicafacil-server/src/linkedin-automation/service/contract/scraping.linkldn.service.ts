@@ -1,10 +1,23 @@
 import { Page } from 'puppeteer';
+import { BrowserTab } from "src/linkedin-automation/components/browser-manager/contract/browser.manager";
 import { JobPostingDto } from "src/jobs/dto/req/job..osting.dto";
 import { LinkedInSearchParams } from "src/linkedin-automation/dto/params.lindkln.search";
 
 export abstract class ScrapingLinkldnService {
-    abstract openLinkdlnProfile({email, password}: 
-        {email: string, password: string}): Promise<void>;
+    /**
+     * Abre la pestaña `tab` del navegador compartido con sesión de LinkedIn.
+     * Si el navegador no existe (o se cerró), el BrowserManager lo relanza.
+     */
+    abstract openLinkdlnProfile(
+        credentials: {email: string, password: string},
+        tab?: BrowserTab,
+    ): Promise<void>;
+
+    /**
+     * Cierra la pestaña del consumidor al terminar su trabajo.
+     * Si era la última pestaña abierta, se cierra el navegador.
+     */
+    abstract releaseTab(tab: BrowserTab): Promise<void>;
 
     /**
      * Get the list of job postings to apply for from

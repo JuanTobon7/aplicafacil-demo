@@ -75,7 +75,9 @@ export class JobProcessor {
     );
 
     if (!claimed) {
-      this.logger.warn(`[Queue] Job ${title} already taken by another worker.`);
+      this.logger.warn(
+        `[Queue] Job ${title} is no longer MATCHED (already processed, in progress or deleted). Discarded.`,
+      );
     }
 
     return claimed;
@@ -85,9 +87,9 @@ export class JobProcessor {
    * Ejecuta el flujo de Easy Apply sobre la vacante reclamada.
    */
   private async applyToJob(job: JobModel): Promise<void> {
-    await this.scrapingLinkldnService.resolveFillFormAndApply(
-      this.helper.toJobPosting(job),
-    );
+    const posting = this.helper.toJobPosting(job);
+    posting.resumePath = await this.helper.resolveResumePath(job);
+    await this.scrapingLinkldnService.resolveFillFormAndApply(posting);
   }
 
   /**

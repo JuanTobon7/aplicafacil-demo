@@ -56,14 +56,14 @@ export class SessionStoreImpl implements SessionStore {
       'utf-8',
     );
 
-    this.logger.log(
+    this.logger.debug(
       `LinkedIn session saved (${cookies.length} cookies) to ${this.sessionFilePath}`,
     );
   }
 
   async load(page: Page): Promise<boolean> {
     if (!fs.existsSync(this.sessionFilePath)) {
-      this.logger.log(
+      this.logger.debug(
         `No saved LinkedIn session found at ${this.sessionFilePath}`,
       );
       return false;
@@ -88,7 +88,7 @@ export class SessionStoreImpl implements SessionStore {
 
       await page.browserContext().setCookie(...cookies);
 
-      this.logger.log(
+      this.logger.debug(
         `LinkedIn session restored (${cookies.length} cookies) from ${this.sessionFilePath}`,
       );
       return true;

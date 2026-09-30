@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import puppeteer, { Browser, Page } from 'puppeteer';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { BrowserManager } from '../contract/browser.manager';
+import { BrowserManager, BrowserTab } from '../contract/browser.manager';
 import { CaptchaDetector } from '../../captcha/contract/captcha.detector';
 
 /**
@@ -52,6 +52,17 @@ export class BrowserManagerImpl implements BrowserManager {
    */
   private readonly resourceBlockingDisabled = new WeakSet<Page>();
 
+  /** Navegador activo (null si no hay ninguno lanzado). */
+  private browser: Browser | null = null;
+  /** Pestaña de cada consumidor. */
+  private readonly tabs = new Map<BrowserTab, Page>();
+  /**
+   * Serializa lanzar/cerrar: evita que el worker y el cron lancen dos
+   * navegadores a la vez, o que uno cierre el navegador mientras el otro
+   * está abriendo su pestaña.
+   */
+  private lock: Promise<unknown> = Promise.resolve();
+
   constructor(
     @Inject(CaptchaDetector)
     private readonly captchaDetector: CaptchaDetector,
@@ -64,17 +75,97 @@ export class BrowserManagerImpl implements BrowserManager {
     return url.includes('/checkpoint/challenge/');
   }
 
-  async launch(): Promise<Browser> {
+  getPage(tab: BrowserTab): Promise<Page> {
+    return this.exclusive(async () => {
+      const existing = this.tabs.get(tab);
+      if (existing && !existing.isClosed()) return existing;
+      this.tabs.delete(tab);
+
+      const browser = await this.ensureBrowser();
+
+      // Reutiliza la pestaña en blanco con la que arranca Chrome (si nadie
+      // la usa) para no dejar una pestaña vacía colgando.
+      const owned = new Set(this.tabs.values());
+      const blank = (await browser.pages()).find(
+        (p) => p.url() === 'about:blank' && !owned.has(p),
+      );
+      const page = blank ?? (await browser.newPage());
+      await this.setupPage(page);
+
+      // Si alguien cierra la pestaña a mano, se olvida y se recrea al pedirla.
+      page.once('close', () => {
+        if (this.tabs.get(tab) === page) this.tabs.delete(tab);
+      });
+
+      this.tabs.set(tab, page);
+      this.logger.debug(
+        `Tab "${tab}" opened (open tabs: ${[...this.tabs.keys()].join(', ')})`,
+      );
+      return page;
+    });
+  }
+
+  releasePage(tab: BrowserTab): Promise<void> {
+    return this.exclusive(async () => {
+      const page = this.tabs.get(tab);
+      this.tabs.delete(tab);
+      if (page && !page.isClosed()) {
+        await page.close().catch(() => undefined);
+        this.logger.debug(`Tab "${tab}" closed`);
+      }
+
+      if (this.tabs.size === 0) {
+        await this.closeBrowser();
+      }
+    });
+  }
+
+  closeAll(): Promise<void> {
+    return this.exclusive(() => this.closeBrowser());
+  }
+
+  private async ensureBrowser(): Promise<Browser> {
+    if (this.browser?.connected) return this.browser;
+
     this.logger.log('Launching browser...');
-    return puppeteerExtra.launch({
+    const browser = await puppeteerExtra.launch({
       headless: false,
       defaultViewport: { width: 1280, height: 800 },
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
+
+    // Si el navegador muere o se cierra a mano, se relanza en el próximo getPage.
+    browser.once('disconnected', () => {
+      if (this.browser === browser) {
+        this.logger.warn('Browser disconnected');
+        this.browser = null;
+        this.tabs.clear();
+      }
+    });
+
+    this.browser = browser;
+    this.tabs.clear();
+    return browser;
   }
 
-  async newPage(browser: Browser): Promise<Page> {
-    const page = await browser.newPage();
+  private async closeBrowser(): Promise<void> {
+    const browser = this.browser;
+    this.browser = null;
+    this.tabs.clear();
+    if (browser?.connected) {
+      this.logger.log('No tabs left, closing browser...');
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn, fn);
+    this.lock = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Configura una pestaña: user agent, bloqueo de recursos y guard de CAPTCHA. */
+  private async setupPage(page: Page): Promise<void> {
 
     // NOTA: NO reenviamos los console.* de la página del navegador a Node.
     // LinkedIn loguea muchísimo ruido interno (tracking, telemetría, warnings
@@ -147,11 +238,5 @@ export class BrowserManagerImpl implements BrowserManager {
       }
     });
 
-    return page;
-  }
-
-  async close(browser: Browser): Promise<void> {
-    this.logger.log('Closing browser...');
-    await browser.close();
   }
 }

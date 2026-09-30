@@ -1,4 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { ProfileModel } from 'src/profiles/models/profiles.model';
 import { JobPostingDto } from 'src/jobs/dto/req/job..osting.dto';
 import { JobSourceDto } from 'src/jobs/dto/helpers/job.source.dto';
 import { JobExtraInfoDto } from 'src/jobs/dto/helpers/job.extrainfo.dto';
@@ -17,7 +23,48 @@ import { PeopleService } from 'src/people/service/contract/people.service';
  */
 @Injectable()
 export class JobAutomationHelperService {
-  constructor(private readonly peopleService: PeopleService) {}
+  private readonly logger = new Logger(JobAutomationHelperService.name);
+
+  constructor(
+    private readonly peopleService: PeopleService,
+    @InjectRepository(ProfileModel)
+    private readonly profileRepository: Repository<ProfileModel>,
+  ) {}
+
+  /**
+   * Ruta local del CV del candidato: el del perfil de la vacante o, si no
+   * tiene, el del primer perfil de la persona con CV guardado.
+   * Con storage S3 el archivo se descarga a un temporal.
+   */
+  async resolveResumePath(job: JobModel): Promise<string | undefined> {
+    const where = [
+      ...(job.profileId ? [{ id: job.profileId }] : []),
+      ...(job.personId ? [{ people: { id: job.personId } }] : []),
+    ];
+    if (where.length === 0) return undefined;
+
+    const profiles = await this.profileRepository.find({ where, relations: { cv: true } });
+    const ordered = [
+      ...profiles.filter((p) => p.id === job.profileId),
+      ...profiles.filter((p) => p.id !== job.profileId),
+    ];
+    const cv = ordered.find((p) => p.cv?.filePath)?.cv;
+    if (!cv) {
+      this.logger.warn(`No CV stored for job "${job.title}" (profile/person has no cv)`);
+      return undefined;
+    }
+
+    const fileName = path.basename(new URL(cv.filePath).pathname);
+    if ((process.env.STORAGE_MODE ?? 'local') === 'local') {
+      return path.resolve(process.env.LOCAL_STORAGE_PATH ?? 'uploads', 'cv', fileName);
+    }
+
+    const response = await fetch(cv.filePath);
+    if (!response.ok) throw new Error(`Could not download CV (${response.status})`);
+    const tmpPath = path.join(os.tmpdir(), `aplicafacil-${fileName}`);
+    await fs.promises.writeFile(tmpPath, Buffer.from(await response.arrayBuffer()));
+    return tmpPath;
+  }
 
   /**
    * Convierte un JobModel (de la BD) en un JobPostingDto para el scraper.

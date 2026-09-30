@@ -66,4 +66,9 @@ export class JobPostingDto {
   @IsOptional()
   @IsString()
   personId?: string;
+
+  /** Ruta local del CV del candidato (para formularios que piden subirlo). */
+  @IsOptional()
+  @IsString()
+  resumePath?: string;
 }

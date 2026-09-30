@@ -10,6 +10,8 @@ export interface AiFormContext {
   profileId?: string;
   /** El LLM consulta los datos personales vía get_candidate_person. */
   personId?: string;
+  /** Ruta local del CV del candidato, para los pasos que piden subirlo. */
+  resumePath?: string;
 }
 
 export interface AiFormOutcome {
@@ -37,4 +39,7 @@ export abstract class AiFormFiller {
     rootSelector: string,
     ctx: AiFormContext,
   ): Promise<AiFormOutcome>;
+
+  /** Loguea los inputs y clickeables del contenedor (diagnóstico). */
+  abstract logInventory(page: Page, rootSelector: string): Promise<void>;
 }
