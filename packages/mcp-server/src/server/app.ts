@@ -1,68 +1,64 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import {
-  fillFormRoute,
-  completeRoute,
-  embeddingsRoute,
-  extractProfileFromCvRoute,
-  searchProfileRoute,
-  searchPeopleRoute,
-  healthRoute,
-  infoRoute,
-} from '../http/routes.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { logger } from '../logger/logger.js';
-import { AiProviderFactory } from '@aplicafacil/core/infrastructure';
 
 /**
- * Create and configure Express app with middleware and routes
+ * Express app que expone el MCP server por streamable-http en `/mcp`.
  *
- * @param aiProviderFactory Fábrica de proveedores de IA (composition root).
- *                          Las rutas NUNCA instancian adapters directamente.
+ * Modo sin estado: cada request crea su propio server + transport. Así
+ * cualquier cliente (o el mismo cliente tras reiniciarse) puede conectarse
+ * sin depender de una sesión previa en memoria.
  */
-export function createExpressApp(aiProviderFactory: AiProviderFactory): Express {
+export function createExpressApp(createServer: () => McpServer): Express {
   const app = express();
 
-  // ====================================
-  // MIDDLEWARE
-  // ====================================
-  app.use(cors());
+  app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: '10mb' }));
 
-  // Request logging middleware
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const method = req.method;
-    const path = req.path;
-    logger.info(`📨 Incoming ${method} ${path}`, {
-      headers: req.headers,
-      bodySize: req.body ? JSON.stringify(req.body).length : 0,
-    });
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    logger.debug(`📨 ${req.method} ${req.path}`);
     next();
   });
 
-  // ====================================
-  // ROUTES
-  // ====================================
-  app.get('/', infoRoute);
-  app.get('/health', healthRoute);
-
-  // Tools endpoints (reciben la fábrica por inyección)
-  app.post('/tools/fill-form', fillFormRoute(aiProviderFactory));
-  app.post('/tools/complete', completeRoute(aiProviderFactory));
-  app.post('/tools/embeddings', embeddingsRoute(aiProviderFactory));
-  app.get('/tools/search-profile', searchProfileRoute);
-  app.post('/tools/search-people', searchPeopleRoute);
-  app.post('/tools/profile/cv/extract', extractProfileFromCvRoute(aiProviderFactory));
-
-  // ====================================
-  // ERROR HANDLING
-  // ====================================
-  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-    logger.error('Unhandled error', err);
-    res.status(500).json({
-      error: 'Internal server error',
-      message: err instanceof Error ? err.message : 'Unknown error',
-    });
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'healthy', timestamp: new Date().toISOString(), version: '1.0.0' });
   });
+
+  app.post('/mcp', async (req: Request, res: Response) => {
+    const server = createServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => {
+      void transport.close();
+      void server.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      logger.error('Error handling MCP request', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
+    }
+  });
+
+  // Sin sesiones no hay stream SSE (GET) ni cierre de sesión (DELETE).
+  const methodNotAllowed = (_req: Request, res: Response) => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed.' },
+      id: null,
+    });
+  };
+  app.get('/mcp', methodNotAllowed);
+  app.delete('/mcp', methodNotAllowed);
 
   return app;
 }

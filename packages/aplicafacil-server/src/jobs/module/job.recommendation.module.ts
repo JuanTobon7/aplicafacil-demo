@@ -14,7 +14,6 @@ import {
   type CachePort,
   type LoggerPort,
 } from '@aplicafacil/core/application';
-import { McpClientService } from '../../mcp-client/mcp-client.service';
 import { RedisService } from '../../common/redis/redis.service';
 
 import { JobRecommendationService } from '../service/contract/job.recommendation.service';
@@ -61,10 +60,6 @@ import { JobModel } from '../models/job.model';
           logger,
           Number(config.get<string>('REDIS_ETAG_TTL')) || 3600,
         ),
-    },
-    {
-      provide: AI_COMPLETION_PORT,
-      useExisting: McpClientService,
     },
     {
       provide: CACHE_PORT,

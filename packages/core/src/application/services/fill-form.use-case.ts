@@ -42,7 +42,7 @@ export class FillFormUseCase {
 
     try {
       // 1) E-tag por cada input: firma estable del campo (label, name, type, options…)
-      const keys = body.fields.map((field) => this.keyFor(body.url, field));
+      const keys = body.fields.map((field) => this.keyFor(body, field));
 
       // 2) Revisa caché: los campos con e-tag idéntico se reutilizan
       const cachedRaw = await this.cache.mget(keys);
@@ -152,9 +152,13 @@ export class FillFormUseCase {
 
   // ------------------------------------------------------------------
   // E-tag por input: hash de la firma del campo + URL de la solicitud abierta
+  // + candidato (las respuestas de un candidato no sirven para otro)
   // ------------------------------------------------------------------
-  private keyFor(url: string, field: FieldDto): string {
-    const urlHash = createHash('sha256').update(url).digest('hex').slice(0, 16);
+  private keyFor(body: FillFormRequestDto, field: FieldDto): string {
+    const urlHash = createHash('sha256')
+      .update(JSON.stringify([body.url, body.profileId ?? null, body.personId ?? null]))
+      .digest('hex')
+      .slice(0, 16);
     const fieldHash = createHash('sha256')
       .update(
         JSON.stringify({

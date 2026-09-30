@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsOptional,
   IsString,
   IsUrl,
   ValidateNested,
@@ -23,4 +24,12 @@ export class FillFormRequestDto {
   @ValidateNested()
   @Type(() => JobMetadataDto)
   metadata!: JobMetadataDto;    // ← toda la info de la vacante
+
+  @IsOptional()
+  @IsString()
+  profileId?: string;           // perfil del candidato (el LLM lo consulta vía tools MCP)
+
+  @IsOptional()
+  @IsString()
+  personId?: string;            // datos personales del candidato (idem)
 }

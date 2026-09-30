@@ -1,5 +1,7 @@
 /**
  * Logger Utility - Centralized logging for the MCP Server
+ *
+ * Escribe SIEMPRE a stderr: en modo stdio, stdout es el canal del protocolo MCP.
  */
 export class Logger {
   private timestamp(): string {
@@ -7,15 +9,15 @@ export class Logger {
   }
 
   info(message: string, data?: any) {
-    console.log(`[${this.timestamp()}] ℹ️  INFO: ${message}`, data || '');
+    console.error(`[${this.timestamp()}] ℹ️  INFO: ${message}`, data || '');
   }
 
   debug(message: string, data?: any) {
-    console.log(`[${this.timestamp()}] 🐛 DEBUG: ${message}`, data || '');
+    console.error(`[${this.timestamp()}] 🐛 DEBUG: ${message}`, data || '');
   }
 
   warn(message: string, data?: any) {
-    console.warn(`[${this.timestamp()}] ⚠️  WARN: ${message}`, data || '');
+    console.error(`[${this.timestamp()}] ⚠️  WARN: ${message}`, data || '');
   }
 
   error(message: string, error?: any) {
@@ -26,7 +28,7 @@ export class Logger {
   }
 
   success(message: string, data?: any) {
-    console.log(`[${this.timestamp()}] ✅ SUCCESS: ${message}`, data || '');
+    console.error(`[${this.timestamp()}] ✅ SUCCESS: ${message}`, data || '');
   }
 }
 

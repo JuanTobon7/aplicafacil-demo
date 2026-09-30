@@ -7,3 +7,5 @@
 export const AI_COMPLETION_PORT = 'AI_COMPLETION_PORT';
 export const CACHE_PORT = 'CACHE_PORT';
 export const LOGGER_PORT = 'LOGGER_PORT';
+export const CHAT_MODEL_PORT = 'CHAT_MODEL_PORT';
+export const TOOL_GATEWAY_PORT = 'TOOL_GATEWAY_PORT';

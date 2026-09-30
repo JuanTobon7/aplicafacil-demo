@@ -24,7 +24,6 @@ import {
   type AiCompletionPort,
   type LoggerPort,
 } from '@aplicafacil/core/application';
-import { McpClientService } from 'src/mcp-client/mcp-client.service';
 
 @Module({
   imports: [
@@ -59,10 +58,6 @@ import { McpClientService } from 'src/mcp-client/mcp-client.service';
       inject: [AI_COMPLETION_PORT, LOGGER_PORT],
       useFactory: (ai: AiCompletionPort, logger: LoggerPort) =>
         new ExtractCvUseCase(ai, logger),
-    },
-    {
-      provide: AI_COMPLETION_PORT,
-      useExisting: McpClientService,
     },
     {
       provide: LOGGER_PORT,

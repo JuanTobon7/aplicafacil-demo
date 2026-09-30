@@ -6,4 +6,6 @@ export class FillFormRequestDto {
   title!: string;               // título del job (redundante con metadata pero viene en raíz)
   fields!: FieldDto[];          // ← campos del formulario
   metadata!: JobMetadataDto;    // ← toda la info de la vacante
+  profileId?: string;           // perfil del candidato (el LLM lo consulta vía tools)
+  personId?: string;            // datos personales del candidato (idem)
 }

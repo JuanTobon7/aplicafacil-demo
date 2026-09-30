@@ -1,69 +1,11 @@
-import axios, { AxiosInstance } from "axios";
-import { ClientBackend } from "../client/client.backend.js";
-import { ClientPeople } from "../client/client.people.js";
-import { ClientProfile } from "../client/client.profile.js";
-import { AiSearchProfileToolImpl } from "./impl/ai.search.profile.impl.js";
-import { httpInterceptor } from "../http/http-interceptor.js";
+import { BackendClient } from '../backend/backend.client.js';
+import { candidateTools } from './candidate.tools.js';
+import { McpToolDefinition } from './tool.js';
 
-export class ToolsBank {
-    private readonly tools = new Map<string, any>();
+export { registerTools } from './tool.js';
+export type { McpToolDefinition } from './tool.js';
 
-    register(name: string, tool: any): void {
-        this.tools.set(name, tool);
-    }
-
-    get<T>(name: string): T {
-        const tool = this.tools.get(name);
-
-        if (!tool) {
-            throw new Error(`Tool '${name}' not found`);
-        }
-
-        return tool as T;
-    }
-
-    has(name: string): boolean {
-        return this.tools.has(name);
-    }
+/** Catálogo completo de tools que publica el MCP server. */
+export function buildTools(backend: BackendClient): McpToolDefinition[] {
+  return [...candidateTools(backend)];
 }
-
-
-
-const toolsBank = new ToolsBank();
-
-// ── Backend HTTP client with interceptor ──────────────────────────────
-const backendAxios: AxiosInstance = axios.create({
-    baseURL: process.env.BACKEND_URL ?? "http://localhost:3000",
-    headers: {
-        "Content-Type": "application/json",
-    },
-    timeout: 5000,
-});
-
-// Apply the HTTP interceptor to log all backend API calls
-httpInterceptor.applyTo(backendAxios, "Backend");
-
-const clientBackend = new ClientBackend(
-    process.env.BACKEND_URL ?? "http://localhost:3000",
-    backendAxios,
-);
-const clientProfile = new ClientProfile(clientBackend);
-const clientPeople = new ClientPeople(clientBackend);
-
-const AiProfileTool = new AiSearchProfileToolImpl(
-    clientProfile,
-    clientPeople
-);
-
-toolsBank.register(
-    "search job profile embedding by id",
-    AiProfileTool.getProfileById.bind(AiProfileTool),
-);
-
-toolsBank.register(
-    "search job profiles by user id",
-    AiProfileTool.getProfilesByUserId.bind(AiProfileTool),
-);
-
-export {toolsBank};
-

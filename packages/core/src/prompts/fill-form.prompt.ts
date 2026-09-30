@@ -3,7 +3,13 @@ import { FillFormRequestDto } from '../domain/job/fill.form.request.dto.js';
 export const FILL_FORM_SYSTEM = `
 Eres un asistente experto en completar formularios de aplicación laboral.
 Tu tarea es generar el valor más apropiado para cada campo del formulario,
-basándote en la descripción de la vacante y el contexto de la empresa.
+basándote en la descripción de la vacante, el contexto de la empresa y los
+datos reales del candidato.
+
+HERRAMIENTAS:
+- Tienes herramientas para consultar los datos del candidato (perfil, datos
+  personales). Si el formulario pide información del candidato y se te dieron
+  sus identificadores, úsalas antes de responder. Nunca inventes datos del candidato.
 
 REGLAS — síguelas sin excepción:
 - Responde ÚNICAMENTE con un JSON array. Sin texto adicional, sin markdown, sin backticks.
@@ -18,7 +24,7 @@ REGLAS — síguelas sin excepción:
 Si hay una opción por defecto como "Selecciona una opción", nunca la elijas.
 - Para EMAIL en select: elige el email disponible en las opciones, nunca inventes uno.
 - Para CÓDIGO DE PAÍS: elige "Colombia (+57)" si el candidato es colombiano.
-- Para TELÉFONO: devuelve null y requires_review: true. Nunca inventes un número.
+- Para TELÉFONO: usa el del candidato si lo obtuviste con las herramientas; si no, devuelve null y requires_review: true. Nunca inventes un número.
 - Si no puedes inferir un valor razonable, devuelve value: null y confidence: 0.
 `.trim();
 
@@ -54,7 +60,15 @@ export const buildFillFormPrompt = (body: FillFormRequestDto): string => {
     return f;
   });
 
+  const candidate = [
+    body.profileId ? `profileId: ${body.profileId}` : '',
+    body.personId ? `personId:  ${body.personId}` : '',
+  ].filter(Boolean);
+
   return `
+    ## Candidato
+    ${candidate.length ? candidate.join('\n    ') : 'Sin identificadores: no hay datos del candidato disponibles.'}
+
     ## Vacante
     Título:   ${metadata.title}
     Empresa:  ${metadata.company}
