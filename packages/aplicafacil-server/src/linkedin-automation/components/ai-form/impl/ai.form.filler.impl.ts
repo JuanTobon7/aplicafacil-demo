@@ -1,26 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ElementHandle, Page } from 'puppeteer';
-import { FillFormUseCase } from '@aplicafacil/core/application';
-import { FieldDto, FieldResult } from '@aplicafacil/core/domain';
+import { DecideFormStepUseCase } from '@aplicafacil/core/application';
+import { FormAction, FormStepDecision } from '@aplicafacil/core/domain';
 import { HumanBehaviorService } from '../../../common/human-behavior.service';
 import {
   AiFormContext,
   AiFormFiller,
   AiFormOutcome,
 } from '../contract/ai.form.filler';
-import {
-  DomField,
-  DomSnapshot,
-  inventoryForm,
-  markAdvanceButton,
-  markUploadButton,
-  snapshotForm,
-} from './form.dom';
+import { DomClickable, DomField, DomSnapshot, inventoryForm, snapshotForm } from './form.dom';
 import { basename } from 'path';
 import { FormStepReport, formatInventory, quote } from './form.step.report';
 
-/** Nº de veces seguidas que avanzar puede no cambiar el paso antes de rendirse. */
+/** Nº de pasos seguidos sin ningún cambio en la página antes de rendirse. */
 const MAX_STUCK = 2;
+/** Líneas de historial que se le pasan a la IA en cada paso. */
+const MAX_HISTORY = 12;
 
 @Injectable()
 export class AiFormFillerImpl implements AiFormFiller {
@@ -31,10 +26,17 @@ export class AiFormFillerImpl implements AiFormFiller {
   private readonly dryRun = process.env.AI_FORM_DRY_RUN === 'true';
 
   constructor(
-    private readonly fillForm: FillFormUseCase,
+    private readonly decideStep: DecideFormStepUseCase,
     private readonly human: HumanBehaviorService,
   ) {}
 
+  /**
+   * Loop "until done": en cada paso la IA recibe los campos vacíos y los
+   * clickeables (con id) y devuelve acciones fill / upload / click sobre esos
+   * ids; el scraper las ejecuta, toma la foto del paso siguiente y repite
+   * hasta que la solicitud queda enviada, la IA se declara bloqueada o la
+   * página deja de cambiar.
+   */
   async fillUntilDone(
     page: Page,
     rootSelector: string,
@@ -46,9 +48,9 @@ export class AiFormFillerImpl implements AiFormFiller {
       pendingReview: [],
       skipped: [],
     };
+    const history: string[] = [];
     let snapshot = await this.snapshot(page, rootSelector);
     let stuck = 0;
-    let resumeUploaded = false;
 
     while (outcome.steps < this.maxSteps) {
       if (snapshot.success) return { ...outcome, submitted: true };
@@ -60,54 +62,75 @@ export class AiFormFillerImpl implements AiFormFiller {
       await this.logInventory(page, rootSelector);
       const report = new FormStepReport(outcome.steps, rootSelector, snapshot);
 
-      // 0) El paso pide un archivo: se sube el CV del candidato (una vez por formulario)
-      if (snapshot.wantsFile && !resumeUploaded) {
-        resumeUploaded = await this.uploadResume(page, rootSelector, ctx.resumePath, report);
-      }
-
-      // 1) La IA decide los valores de los campos vacíos de este paso
-      if (snapshot.fields.length > 0) {
-        const result = await this.fillForm.execute({
+      // 1) La IA decide las acciones del paso (por id)
+      let decision: FormStepDecision;
+      try {
+        decision = await this.decideStep.execute({
           url: ctx.url,
           title: ctx.title,
           metadata: ctx.metadata,
           profileId: ctx.profileId,
           personId: ctx.personId,
-          fields: snapshot.fields.map(toFieldDto),
+          step: outcome.steps,
+          heading: snapshot.heading,
+          fields: snapshot.fields.map((f) => ({
+            name: f.key,
+            label: f.label,
+            type: f.type,
+            required: f.required,
+            placeholder: f.placeholder,
+            options: f.options,
+          })),
+          filled: snapshot.filled,
+          clickables: snapshot.clickables,
+          errors: snapshot.errors,
+          resumeName: ctx.resumePath ? basename(ctx.resumePath) : undefined,
+          history: history.slice(-MAX_HISTORY),
         });
-        report.aiDecisions(snapshot.fields, result.fields, this.minConfidence);
-        await this.applyValues(page, snapshot.fields, result.fields, outcome, report);
+      } catch (error) {
+        const reason = `La IA no pudo decidir el paso: ${errorMessage(error)}`;
+        this.logger.error(report.result(`✖ ${reason}`));
+        return { ...outcome, reason };
       }
+      report.aiPlan(decision, snapshot, this.minConfidence);
 
-      // 2) Avanzar (siguiente / revisar / enviar)
-      const advance = await page.evaluate(markAdvanceButton, rootSelector);
-      const button = advance ? await page.$('pierce/[data-af-advance]') : null;
-      if (!advance || !button) {
-        const reason = 'No se encontró botón para avanzar o enviar';
+      if (decision.status === 'blocked') {
+        const reason = `La IA no puede continuar: ${decision.reason ?? 'sin motivo'}`;
         this.logger.warn(report.result(`✖ ${reason}`));
         return { ...outcome, reason };
       }
 
-      // Dry-run: recorre todo el formulario pero NUNCA envía la postulación
-      if (advance.kind === 'submit' && this.dryRun) {
-        const reason = `DRY RUN: listo para enviar, no se pulsa "${advance.text}"`;
-        this.logger.warn(report.result(`⏸ ${reason}`));
-        return { ...outcome, reason };
+      // 2) El scraper ejecuta las acciones en orden; un click cierra el paso
+      const done: string[] = [];
+      let clicked: DomClickable | undefined;
+      for (const action of decision.actions) {
+        if (action.type === 'click') {
+          clicked = snapshot.clickables.find((c) => c.id === action.id);
+          if (!clicked) continue;
+          // Dry-run: recorre todo el formulario pero NUNCA envía la postulación
+          if (clicked.kind === 'submit' && this.dryRun) {
+            const reason = `DRY RUN: listo para enviar, no se pulsa "${clicked.text}"`;
+            this.logger.warn(report.result(`⏸ ${reason}`));
+            return { ...outcome, reason };
+          }
+          if (await this.click(page, clicked, report)) done.push(`click "${clicked.text}"`);
+          else clicked = undefined;
+          break;
+        }
+        const summary = await this.runAction(page, action, snapshot, ctx, outcome, report);
+        if (summary) done.push(summary);
       }
 
-      report.action('click', `botón "${advance.text}"`, `(${advance.kind})`);
-      await this.human.clickElement(button);
-      await this.human.wait(1500, 3000);
-
-      // 3) ¿Qué pasó tras avanzar?
+      // 3) ¿Qué pasó tras las acciones?
       const after = await this.snapshot(page, rootSelector);
+      const stepLine = `Paso ${outcome.steps}${snapshot.heading ? ` (${snapshot.heading})` : ''}: ${done.join('; ') || 'sin acciones'}`;
 
       if (after.success) {
         this.logger.log(report.result('✔ solicitud enviada'));
         return { ...outcome, submitted: true };
       }
 
-      if (advance.kind === 'submit') {
+      if (clicked?.kind === 'submit') {
         // El contenedor del formulario (p.ej. modal de LinkedIn) se cerró al enviar
         if (!after.rootFound) {
           this.logger.log(report.result('✔ enviada (el formulario se cerró)'));
@@ -122,11 +145,12 @@ export class AiFormFillerImpl implements AiFormFiller {
         }
       }
 
-      if (after.rootFound && after.fingerprint === snapshot.fingerprint) {
+      if (after.rootFound && progressKey(after) === progressKey(snapshot)) {
         stuck++;
         const errors = after.errors.join('; ') || 'ninguno visible';
+        history.push(`${stepLine} → NO avanzó, errores: ${errors}`);
         this.logger.warn(
-          report.result(`✖ no avanzó (${stuck}/${MAX_STUCK}), errores: ${errors}`),
+          report.result(`✖ la página no cambió (${stuck}/${MAX_STUCK}), errores: ${errors}`),
         );
         if (stuck >= MAX_STUCK) {
           return {
@@ -136,13 +160,61 @@ export class AiFormFillerImpl implements AiFormFiller {
         }
       } else {
         stuck = 0;
-        this.logger.log(report.result('→ avanzó al siguiente paso'));
+        const moved = after.fingerprint !== snapshot.fingerprint;
+        history.push(`${stepLine} → ${moved ? 'avanzó' : 'mismo paso, cambiaron los campos'}`);
+        this.logger.log(
+          report.result(moved ? '→ avanzó al siguiente paso' : '→ mismo paso, campos actualizados'),
+        );
       }
 
       snapshot = after;
     }
 
     return { ...outcome, reason: `Se alcanzó el máximo de ${this.maxSteps} pasos` };
+  }
+
+  /** Ejecuta una acción fill / upload. Devuelve su resumen para el historial. */
+  private async runAction(
+    page: Page,
+    action: Exclude<FormAction, { type: 'click' }>,
+    snapshot: DomSnapshot,
+    ctx: AiFormContext,
+    outcome: AiFormOutcome,
+    report: FormStepReport,
+  ): Promise<string | null> {
+    if (action.type === 'upload') {
+      const ok = await this.uploadResume(page, action.id, ctx.resumePath, report);
+      return ok ? 'subió el CV' : 'FALLÓ subir el CV';
+    }
+
+    const field = snapshot.fields.find((f) => f.key === action.id);
+    if (!field) return null;
+    if (action.confidence < this.minConfidence) {
+      addOnce(outcome.skipped, field.label);
+      return null;
+    }
+    if (action.requires_review) addOnce(outcome.pendingReview, field.label);
+
+    try {
+      await this.applyValue(page, field, action.value, report);
+      return `"${field.label}" = ${quote(action.value)}`;
+    } catch (error) {
+      report.action('FAIL', field.key, `← ${quote(action.value)}: ${errorMessage(error)}`);
+      addOnce(outcome.skipped, field.label);
+      return `FALLÓ llenar "${field.label}": ${errorMessage(error)}`;
+    }
+  }
+
+  private async click(page: Page, target: DomClickable, report: FormStepReport): Promise<boolean> {
+    const el = await page.$(`pierce/[data-af-click="${target.id}"]`);
+    if (!el) {
+      report.action('FAIL', target.id, `botón "${target.text}" no encontrado`);
+      return false;
+    }
+    report.action('click', `botón "${target.text}"`, `(${target.kind})`);
+    await this.human.clickElement(el);
+    await this.human.wait(1500, 3000);
+    return true;
   }
 
   /**
@@ -161,13 +233,13 @@ export class AiFormFillerImpl implements AiFormFiller {
   }
 
   /**
-   * Sube el CV: directo al input[type=file] si existe; si no, pulsa el botón
-   * "Cargar currículum" y responde al selector de archivos del navegador.
-   * Devuelve true si se subió.
+   * Sube el CV con el clickeable que eligió la IA: directo si es un
+   * input[type=file]; si es un botón ("Cargar currículum"), lo pulsa y
+   * responde al selector de archivos del navegador. Devuelve true si se subió.
    */
   private async uploadResume(
     page: Page,
-    rootSelector: string,
+    id: string,
     resumePath: string | undefined,
     report: FormStepReport,
   ): Promise<boolean> {
@@ -178,28 +250,25 @@ export class AiFormFillerImpl implements AiFormFiller {
     const fileName = basename(resumePath);
 
     try {
-      const fileInput = (await page.$(
-        `pierce/${rootSelector} input[type="file"]`,
-      )) as ElementHandle<HTMLInputElement> | null;
-      if (fileInput) {
-        await fileInput.uploadFile(resumePath);
+      const el = await page.$(`pierce/[data-af-click="${id}"]`);
+      if (!el) throw new Error(`clickeable ${id} no encontrado`);
+      const isFileInput = await el.evaluate((e) => e.matches('input[type="file"]'));
+      if (isFileInput) {
+        await (el as ElementHandle<HTMLInputElement>).uploadFile(resumePath);
         report.action('upload', 'input[type=file]', `← ${fileName}`);
       } else {
-        const text = await page.evaluate(markUploadButton, rootSelector);
-        const button = text ? await page.$('pierce/[data-af-upload]') : null;
-        if (!button) return false;
         const [chooser] = await Promise.all([
           page.waitForFileChooser({ timeout: 10_000 }),
-          this.human.clickElement(button),
+          this.human.clickElement(el),
         ]);
         await chooser.accept([resumePath]);
-        report.action('upload', `botón "${text}"`, `← ${fileName}`);
+        report.action('upload', `botón ${id}`, `← ${fileName}`);
       }
       // Dar tiempo a que el sitio procese el archivo
       await this.human.wait(2500, 4000);
       return true;
     } catch (error) {
-      report.action('FAIL', 'CV', `← ${fileName}: ${error instanceof Error ? error.message : error}`);
+      report.action('FAIL', 'CV', `← ${fileName}: ${errorMessage(error)}`);
       return false;
     }
   }
@@ -213,38 +282,6 @@ export class AiFormFillerImpl implements AiFormFiller {
       this.logger.warn(
         `inputs and clickeables relevant: no se pudo inventariar (${error instanceof Error ? error.message : error})`,
       );
-    }
-  }
-
-  private async applyValues(
-    page: Page,
-    fields: DomField[],
-    results: FieldResult[],
-    outcome: AiFormOutcome,
-    report: FormStepReport,
-  ): Promise<void> {
-    const byKey = new Map(fields.map((f) => [f.key, f]));
-
-    for (const result of results) {
-      const field = byKey.get(result.fieldName);
-      if (!field) continue;
-
-      if (result.value == null || result.confidence < this.minConfidence) {
-        addOnce(outcome.skipped, field.label);
-        continue;
-      }
-      if (result.requires_review) addOnce(outcome.pendingReview, field.label);
-
-      try {
-        await this.applyValue(page, field, result.value, report);
-      } catch (error) {
-        report.action(
-          'FAIL',
-          field.key,
-          `← ${quote(result.value)}: ${error instanceof Error ? error.message : error}`,
-        );
-        addOnce(outcome.skipped, field.label);
-      }
     }
   }
 
@@ -327,17 +364,6 @@ export class AiFormFillerImpl implements AiFormFiller {
   }
 }
 
-function toFieldDto(field: DomField): FieldDto {
-  return {
-    name: field.key,
-    label: field.label,
-    type: field.type,
-    required: field.required,
-    placeholder: field.placeholder,
-    options: field.options,
-  };
-}
-
 function addOnce(list: string[], item: string): void {
   if (!list.includes(item)) list.push(item);
 }
@@ -345,4 +371,13 @@ function addOnce(list: string[], item: string): void {
 function readNumberEnv(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
   return process.env[name] && Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** Qué cuenta como "la página cambió": paso, campos vacíos y errores visibles. */
+function progressKey(s: DomSnapshot): string {
+  return [s.fingerprint, s.fields.map((f) => f.key).join(','), s.errors.join('|')].join('#');
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -82,7 +82,7 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    @Cron(CronExpression.EVERY_5_MINUTES)
+    /*@Cron(CronExpression.EVERY_5_MINUTES)
     async startJobAutomation(){
         // Primero se aplica a las vacantes existentes: la búsqueda solo corre
         // cuando la cola está vacía y el worker no está postulando.
@@ -119,7 +119,7 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
             // El cron terminó: cierra su pestaña (y el navegador si el worker no tiene la suya).
             await this.scrapingLinkldnService.releaseTab('search');
         }
-    }
+    }*/
 
     @Cron(CronExpression.EVERY_5_MINUTES)
     async applyToPendingJobs() {

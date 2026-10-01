@@ -29,6 +29,10 @@ export interface DomSnapshot {
   heading: string;
   /** Campos visibles que siguen VACÍOS (los ya llenos no se tocan). */
   fields: DomField[];
+  /** Campos visibles ya llenos (contexto para la IA). */
+  filled: Array<{ label: string; value: string }>;
+  /** Botones / inputs de archivo del paso; `id` queda en `data-af-click`. */
+  clickables: DomClickable[];
   /** Nº total de campos del paso (llenos o vacíos). */
   inputCount: number;
   /** Firma del paso actual: si no cambia tras avanzar, el formulario está bloqueado. */
@@ -37,11 +41,15 @@ export interface DomSnapshot {
   errors: string[];
   /** La página muestra una confirmación de solicitud enviada. */
   success: boolean;
-  /** El paso pide subir un archivo (input file o botón "Cargar currículum"). */
-  wantsFile: boolean;
 }
 
-export type AdvanceKind = 'submit' | 'review' | 'next';
+export type ClickableKind = 'submit' | 'review' | 'next' | 'upload' | 'other';
+
+export interface DomClickable {
+  id: string;
+  text: string;
+  kind: ClickableKind;
+}
 
 export interface DomInventory {
   rootFound: boolean;
@@ -180,6 +188,14 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
   const root = deepQuery(rootSelector);
   const scope: Element = root ?? document.body;
 
+  // Los ids de la foto anterior ya no valen: se re-asignan en cada paso.
+  shadowScopes.forEach((s) =>
+    s.querySelectorAll('[data-af-key], [data-af-click]').forEach((el) => {
+      el.removeAttribute('data-af-key');
+      el.removeAttribute('data-af-click');
+    }),
+  );
+
   const clean = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim();
   const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
   const labelOf = (el: HTMLElement): string => {
@@ -213,6 +229,7 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
   };
 
   const fields: DomField[] = [];
+  const filled: Array<{ label: string; value: string }> = [];
   const radioGroups = new Map<string, HTMLInputElement[]>();
   const allNames: string[] = [];
   const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file', 'password', 'search'];
@@ -244,12 +261,19 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
 
     // Los campos ya llenos (p.ej. email/teléfono precargados) no se tocan.
     if (type === 'checkbox') {
-      if (input.checked) continue;
+      if (input.checked) {
+        filled.push({ label: labelOf(el), value: 'marcado' });
+        continue;
+      }
     } else if (tag === 'select') {
       const select = el as HTMLSelectElement;
       const selected = select.options[select.selectedIndex];
-      if (selected && selected.value && !isPlaceholderOption(clean(selected.text))) continue;
+      if (selected && selected.value && !isPlaceholderOption(clean(selected.text))) {
+        filled.push({ label: labelOf(el), value: clean(selected.text) });
+        continue;
+      }
     } else if (input.value.trim()) {
+      filled.push({ label: labelOf(el), value: input.value.trim().slice(0, 80) });
       continue;
     }
 
@@ -276,7 +300,11 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
   }
 
   for (const [group, radios] of radioGroups) {
-    if (radios.some((r) => r.checked)) continue;
+    const checked = radios.find((r) => r.checked);
+    if (checked) {
+      filled.push({ label: group, value: clean(checked.labels?.[0]?.innerText) || checked.value });
+      continue;
+    }
     const key = uniqueKey(group);
     radios.forEach((r) => r.setAttribute('data-af-key', key));
     fields.push({
@@ -331,6 +359,49 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
     if (text) errors.push(`${labelOf(el)}: ${text}`);
   }
 
+  // Clickeables con id: la IA decide cuál pulsar (avanzar, subir CV…).
+  // Los input[type=file] suelen estar ocultos tras un botón: se incluyen igual.
+  const uploadRe =
+    /cargar (curr[ií]culum|cv)|subir (curr[ií]culum|cv|archivo)|upload (resume|cv|file)|attach (resume|cv)|adjuntar/;
+  const submitRe = /submit|enviar|send application|apply now|postular|aplicar|solicitar|finish|finalizar/;
+  const clickables: DomClickable[] = [];
+  const clickableEls = Array.from(
+    scope.querySelectorAll(
+      'button, input[type="submit"], input[type="button"], [role="button"], a[role="button"], label, input[type="file"]',
+    ),
+  );
+  for (const el of clickableEls) {
+    const isFile = el.matches('input[type="file"]');
+    const text = clean(
+      isFile
+        ? `archivo ${(el as HTMLInputElement).accept || ''}`
+        : `${(el as HTMLElement).innerText || (el as HTMLInputElement).value || ''} ${el.getAttribute('aria-label') ?? ''}`,
+    );
+    const lower = text.toLowerCase();
+    // Los <label> solo cuentan si son el botón de subir archivo.
+    if (el.tagName === 'LABEL' && !uploadRe.test(lower)) continue;
+    if (!isFile && (!visible(el) || !text)) continue;
+    if ((el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true') continue;
+    if (el.closest('[role="search"], header, nav, footer')) continue;
+    if (clickables.length >= 40) break;
+
+    const kind: ClickableKind =
+      isFile || uploadRe.test(lower)
+        ? 'upload'
+        : /atr[aá]s|\bback\b|anterior|previous|cancel|descartar|dismiss|cerrar|close|guardar|\bsave\b|editar|\bedit\b|eliminar|remove|borrar|share|compartir/.test(lower)
+          ? 'other'
+          : submitRe.test(lower)
+            ? 'submit'
+            : /review|revisar/.test(lower)
+              ? 'review'
+              : /\bnext\b|continue|continuar|siguiente|proceed/.test(lower)
+                ? 'next'
+                : 'other';
+    const id = `c${clickables.length + 1}`;
+    el.setAttribute('data-af-click', id);
+    clickables.push({ id, text: text.slice(0, 80), kind });
+  }
+
   const heading = clean(
     (Array.from(scope.querySelectorAll('h1, h2, h3')).find(visible) as HTMLElement | undefined)?.innerText,
   );
@@ -342,14 +413,9 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
     url: location.href,
     heading,
     fields,
+    filled,
+    clickables,
     inputCount: allNames.length,
-    wantsFile:
-      !!scope.querySelector('input[type="file"]') ||
-      Array.from(scope.querySelectorAll('button, [role="button"], label')).some((b) =>
-        /cargar (curr[ií]culum|cv)|subir (curr[ií]culum|cv|archivo)|upload (resume|cv|file)|attach (resume|cv)|adjuntar/i.test(
-          clean((b as HTMLElement).innerText),
-        ),
-      ),
     fingerprint: [location.href, heading, progress, allNames.join(',')].join('|'),
     errors,
     success:
@@ -361,98 +427,3 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
   };
 }
 
-/**
- * Busca el botón de subir CV ("Cargar currículum", "Upload resume"…) y lo marca
- * con `data-af-upload`. Devuelve su texto, o null si no hay.
- */
-export function markUploadButton(rootSelector: string): string | null {
-  const shadowScopes: Array<Document | ShadowRoot> = [document];
-  for (let i = 0; i < shadowScopes.length; i++) {
-    shadowScopes[i].querySelectorAll('*').forEach((el) => {
-      if (el.shadowRoot) shadowScopes.push(el.shadowRoot);
-    });
-  }
-  let scope: Element = document.body;
-  for (const s of shadowScopes) {
-    const found = s.querySelector(rootSelector);
-    if (found) {
-      scope = found;
-      break;
-    }
-  }
-  shadowScopes.forEach((s) =>
-    s.querySelectorAll('[data-af-upload]').forEach((b) => b.removeAttribute('data-af-upload')),
-  );
-  const button = Array.from(scope.querySelectorAll('button, [role="button"], label')).find(
-    (b) =>
-      (b as HTMLElement).getClientRects().length > 0 &&
-      /cargar (curr[ií]culum|cv)|subir (curr[ií]culum|cv|archivo)|upload (resume|cv|file)|attach (resume|cv)|adjuntar/i.test(
-        (b as HTMLElement).innerText,
-      ),
-  );
-  if (!button) return null;
-  button.setAttribute('data-af-upload', '1');
-  return (button as HTMLElement).innerText.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Busca el botón para avanzar (enviar > revisar > siguiente), lo marca con
- * `data-af-advance` para poder pulsarlo desde Node con comportamiento humano.
- */
-export function markAdvanceButton(
-  rootSelector: string,
-): { kind: AdvanceKind; text: string } | null {
-  // Busca también dentro de shadow DOM abiertos (LinkedIn monta el modal de
-  // Easy Apply dentro de un shadowRoot, invisible para document.querySelector).
-  const shadowScopes: Array<Document | ShadowRoot> = [document];
-  for (let i = 0; i < shadowScopes.length; i++) {
-    shadowScopes[i].querySelectorAll('*').forEach((el) => {
-      if (el.shadowRoot) shadowScopes.push(el.shadowRoot);
-    });
-  }
-  const deepQuery = (sel: string): Element | null => {
-    for (const s of shadowScopes) {
-      const found = s.querySelector(sel);
-      if (found) return found;
-    }
-    return null;
-  };
-  const scope: Element = deepQuery(rootSelector) ?? document.body;
-  const clean = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim();
-
-  shadowScopes.forEach((s) =>
-    s.querySelectorAll('[data-af-advance]').forEach((b) => b.removeAttribute('data-af-advance')),
-  );
-
-  const buttons = Array.from(
-    scope.querySelectorAll('button, input[type="submit"], [role="button"]'),
-  ).filter((b) => {
-    const el = b as HTMLButtonElement;
-    return el.getClientRects().length > 0 && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
-  });
-
-  const textOf = (b: Element) =>
-    clean(
-      `${(b as HTMLElement).innerText || (b as HTMLInputElement).value || ''} ${b.getAttribute('aria-label') ?? ''}`,
-    ).toLowerCase();
-
-  const exclude =
-    /atr[aá]s|\bback\b|anterior|previous|cancel|descartar|dismiss|cerrar|close|guardar|\bsave\b|editar|\bedit\b|eliminar|remove|borrar|share|compartir/;
-  const patterns: Array<[AdvanceKind, RegExp]> = [
-    ['submit', /submit|enviar|send application|apply now|postular|aplicar|solicitar|finish|finalizar/],
-    ['review', /review|revisar/],
-    ['next', /\bnext\b|continue|continuar|siguiente|proceed/],
-  ];
-
-  for (const [kind, re] of patterns) {
-    const button = buttons.find((b) => {
-      const text = textOf(b);
-      return re.test(text) && !exclude.test(text);
-    });
-    if (button) {
-      button.setAttribute('data-af-advance', '1');
-      return { kind, text: textOf(button) };
-    }
-  }
-  return null;
-}

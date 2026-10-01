@@ -1,4 +1,4 @@
-import { FieldResult } from '@aplicafacil/core/domain';
+import { FormStepDecision } from '@aplicafacil/core/domain';
 import { DomField, DomInventory, DomSnapshot } from './form.dom';
 
 const MAX_VALUE_LENGTH = 60;
@@ -33,26 +33,28 @@ export class FormStepReport {
     }
   }
 
-  /** Lo que decidió la IA para cada campo y si se aplica o se descarta. */
-  aiDecisions(fields: DomField[], results: FieldResult[], minConfidence: number): void {
-    const answered = new Map(results.map((r) => [r.fieldName, r]));
-    this.lines.push('  IA:');
-    for (const field of fields) {
-      const r = answered.get(field.key);
-      if (!r) {
-        this.lines.push(`    ✖ ${field.key} → sin respuesta de la IA`);
-      } else if (r.value == null) {
-        this.lines.push(`    ✖ ${field.key} → vacío (la IA no tiene el dato)`);
-      } else if (r.confidence < minConfidence) {
+  /** Las acciones que decidió la IA para este paso (por id). */
+  aiPlan(decision: FormStepDecision, snapshot: DomSnapshot, minConfidence: number): void {
+    const texts = new Map(snapshot.clickables.map((c) => [c.id, `"${c.text}" (${c.kind})`]));
+    this.lines.push(`  IA: ${decision.status}${decision.reason ? ` — ${decision.reason}` : ''}`);
+    if (decision.actions.length === 0) this.lines.push('    (sin acciones)');
+    for (const a of decision.actions) {
+      if (a.type !== 'fill') {
+        this.lines.push(`    → ${a.type} ${a.id} ${texts.get(a.id) ?? ''}`);
+      } else if (a.confidence < minConfidence) {
         this.lines.push(
-          `    ✖ ${field.key} → vacío (confianza ${r.confidence.toFixed(2)} < ${minConfidence})`,
+          `    ✖ ${a.id} = ${quote(a.value)} → se omite (confianza ${a.confidence.toFixed(2)} < ${minConfidence})`,
         );
       } else {
-        const review = r.requires_review ? ', revisar' : '';
+        const review = a.requires_review ? ', revisar' : '';
         this.lines.push(
-          `    ${r.requires_review ? '⚠' : '✔'} ${field.key} = ${quote(r.value)} (${r.confidence.toFixed(2)}${review})`,
+          `    ${a.requires_review ? '⚠' : '✔'} ${a.id} = ${quote(a.value)} (${a.confidence.toFixed(2)}${review})`,
         );
       }
+    }
+    const answered = new Set(decision.actions.map((a) => a.id));
+    for (const field of snapshot.fields) {
+      if (!answered.has(field.key)) this.lines.push(`    · ${field.key} → la IA no lo llena`);
     }
   }
 

@@ -5,7 +5,7 @@ import { JobRecommendationController } from '../controller/job.recommendation.co
 import { McpClientModule } from '../../mcp-client/mcp-client.module';
 import { RedisModule } from '../../common/redis/redis.module';
 import { NestLoggerAdapter } from '../../common/logger/nest-logger.adapter';
-import { FillFormUseCase } from '@aplicafacil/core/application';
+import { DecideFormStepUseCase, FillFormUseCase } from '@aplicafacil/core/application';
 import {
   AI_COMPLETION_PORT,
   CACHE_PORT,
@@ -62,6 +62,13 @@ import { JobModel } from '../models/job.model';
         ),
     },
     {
+      // Loop paso a paso del scraper: la IA devuelve acciones por id
+      provide: DecideFormStepUseCase,
+      inject: [AI_COMPLETION_PORT],
+      useFactory: (ai: AiCompletionPort) =>
+        new DecideFormStepUseCase(ai, new NestLoggerAdapter(DecideFormStepUseCase.name)),
+    },
+    {
       provide: CACHE_PORT,
       useExisting: RedisService,
     },
@@ -70,6 +77,11 @@ import { JobModel } from '../models/job.model';
       useFactory: () => new NestLoggerAdapter('FillFormUseCase'),
     },
   ],
-  exports: ['JobsService', 'ValidateJobsService', FillFormUseCase],
+  exports: [
+    'JobsService',
+    'ValidateJobsService',
+    FillFormUseCase,
+    DecideFormStepUseCase,
+  ],
 })
 export class JobRecommendationModule {}

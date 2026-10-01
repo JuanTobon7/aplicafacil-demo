@@ -19,7 +19,8 @@ import { McpClientService } from './mcp-client.service';
 /**
  * Host MCP de la aplicación.
  *
- * - CHAT_MODEL_PORT: el LLM (OpenRouter / OmniRoute según LLM_PROVIDER).
+ * - CHAT_MODEL_PORT: el LLM (OpenRouter / OmniRoute según LLM_PROVIDER;
+ *   "openrouter,omniroute" = cadena con failover).
  * - TOOL_GATEWAY_PORT: el cliente MCP conectado al mcp-server.
  * - AI_COMPLETION_PORT: agente que une ambos; el LLM decide qué tools usar.
  *
@@ -47,6 +48,7 @@ import { McpClientService } from './mcp-client.service';
             model: config.get<string>('OPENROUTER_MODEL'),
             embeddingModel: config.get<string>('OPENROUTER_EMBEDDING_MODEL'),
           }),
+          logger: new NestLoggerAdapter('AiProvider'),
           omniRoute: new OmniRouteAdapter({
             apiKey: config.get<string>('OMNIROUTE_API_KEY'),
             baseURL: config.get<string>('OMNIROUTE_BASE_URL'),

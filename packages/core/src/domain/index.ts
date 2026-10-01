@@ -13,3 +13,4 @@ export * from './candidate/skill.response.dto.js';
 export * from './candidate/experience.response.dto.js';
 export * from './candidate/education.response.dto.js';
 export * from './candidate/profile.response.dto.js';
+export * from './job/form-step.js';

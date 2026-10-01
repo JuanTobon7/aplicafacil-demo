@@ -21,7 +21,7 @@ import { SessionStoreImpl } from './session-store/impl/session.store.impl';
 import { HumanBehaviorService } from '../common/human-behavior.service';
 
 @Module({
-  // FillFormUseCase (IA + tools MCP) para llenar formularios de postulación
+  // DecideFormStepUseCase (IA + tools MCP) para llenar formularios de postulación
   imports: [JobRecommendationModule],
   providers: [
     HumanBehaviorService,
