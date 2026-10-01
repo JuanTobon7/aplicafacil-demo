@@ -1,5 +1,5 @@
 import { Page } from 'puppeteer';
-import { JobMetadataDto } from '@aplicafacil/core/domain';
+import { JobLanguage, JobMetadataDto } from '@aplicafacil/core/domain';
 
 /** Contexto de la vacante y del candidato para el que se llena el formulario. */
 export interface AiFormContext {
@@ -12,6 +12,8 @@ export interface AiFormContext {
   personId?: string;
   /** Ruta local del CV del candidato, para los pasos que piden subirlo. */
   resumePath?: string;
+  /** Idioma de la vacante: idioma de las respuestas y del CV a elegir. */
+  language?: JobLanguage;
 }
 
 export interface AiFormOutcome {
@@ -20,6 +22,8 @@ export interface AiFormOutcome {
   steps: number;
   /** Motivo por el que se detuvo sin enviar. */
   reason?: string;
+  /** AI_FORM_DRY_RUN: llegó al botón de enviar y se detuvo a propósito. */
+  dryRunStopped?: boolean;
   /** Campos que la IA llenó marcándolos para revisión humana. */
   pendingReview: string[];
   /** Campos que la IA no se atrevió a llenar (sin valor o baja confianza). */

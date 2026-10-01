@@ -3,7 +3,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { ScrapingLinkldnService } from "../service/contract/scraping.linkldn.service";
 import { JobPostingDto } from "src/jobs/dto/req/job..osting.dto";
 import { LinkedInSearchParams } from "../dto/params.lindkln.search";
-import { ValidateJobsService } from "../../jobs/service/contract/validate.jobs";
+import { JobLifecycleService } from "src/jobs/service/impl/job.lifecycle.service";
+import { JobIntakeService } from "../service/job.intake.service";
 import { JobsService } from "src/jobs/service/contract/jobs.service";
 import { JobApplicationStatus } from "src/jobs/enum/job-application-status";
 import { JobAutomationHelperService } from "../service/job.automation.helper.service";
@@ -19,13 +20,13 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
     constructor(
         @Inject('ScrapingLinkldnService') 
         private readonly scrapingLinkldnService: ScrapingLinkldnService,
-        @Inject('ValidateJobsService')
-        private readonly validateJobsService: ValidateJobsService,
         @Inject('JobsService')
         private readonly jobsService: JobsService,
         private readonly helper: JobAutomationHelperService,
         private readonly jobApplyerQueue: JobApplyerQueue,
         private readonly queuePoller: QueuePoller,
+        private readonly lifecycle: JobLifecycleService,
+        private readonly intake: JobIntakeService,
     ) {
         this.params = new LinkedInSearchParams(
             '1_week', 
@@ -71,19 +72,22 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
     private async recoverInterruptedJobs(): Promise<void> {
         const interrupted = await this.jobsService.getJobsByStatus(JobApplicationStatus.APPLYING);
         for (const job of interrupted) {
-            await this.jobsService.updateStatusJob(
-                job.id,
-                JobApplicationStatus.MATCHED,
-                'Recuperada tras reinicio del servidor durante la postulación',
-            );
+            await this.lifecycle.recover(job, 'Recuperada tras reinicio del servidor durante la postulación');
         }
         if (interrupted.length > 0) {
             this.logger.warn(`Recovered ${interrupted.length} jobs interrupted in APPLYING.`);
         }
     }
 
-    /*@Cron(CronExpression.EVERY_5_MINUTES)
+    /**
+     * Búsqueda de vacantes. Antes de dejarlas para postular, la IA evalúa por
+     * embeddings si valen la pena (DISCOVERED → MATCHED | SKIPPED).
+     * Desactivada salvo JOB_SEARCH_ENABLED=true.
+     */
+    @Cron(CronExpression.EVERY_5_MINUTES)
     async startJobAutomation(){
+        if (process.env.JOB_SEARCH_ENABLED !== 'true') return;
+
         // Primero se aplica a las vacantes existentes: la búsqueda solo corre
         // cuando la cola está vacía y el worker no está postulando.
         const pending = await this.jobApplyerQueue.getPendingCount();
@@ -96,6 +100,9 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
 
         this.logger.log('Starting job automation process...');
 
+        // Las que no se pudieron evaluar antes (p.ej. embeddings caídos)
+        await this.intake.reevaluate();
+
         const userId = await this.helper.getAutomationUserId();
 
         const credentials = this.helper.getCredentialsLinkdln();
@@ -103,23 +110,13 @@ export class JobWorkerAutomation implements OnModuleInit, OnModuleDestroy {
         try {
             await this.scrapingLinkldnService.openLinkdlnProfile(credentials, 'search');
 
-            const searchJobsToApply : JobPostingDto[] = await this.scrapingLinkldnService.getJobsToApply(this.params);
-            const validJobs = await this.validateJobsService.validateJobsApplied(this.jobsService, searchJobsToApply, userId);
-
-            const jobsToApplyLimited = this.helper.extractNumberOfJobsToApply(validJobs, this.MAX_JOBS_TO_APPLY);
-
-            if(jobsToApplyLimited.length <= 0) {
-                this.logger.log('No valid jobs found to apply for.');
-                return;
-            }
-
-            this.logger.log(`Found ${jobsToApplyLimited.length} valid jobs to apply for.`);
-            await this.validateJobsService.markJobsAsPending(this.jobsService, jobsToApplyLimited, userId);
+            const searchJobs : JobPostingDto[] = await this.scrapingLinkldnService.getJobsToApply(this.params);
+            await this.intake.intake(searchJobs, userId);
         } finally {
             // El cron terminó: cierra su pestaña (y el navegador si el worker no tiene la suya).
             await this.scrapingLinkldnService.releaseTab('search');
         }
-    }*/
+    }
 
     @Cron(CronExpression.EVERY_5_MINUTES)
     async applyToPendingJobs() {

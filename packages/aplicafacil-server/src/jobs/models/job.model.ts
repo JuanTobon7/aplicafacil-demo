@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { JobMetadata } from '@aplicafacil/core/domain';
 import { JobApplicationStatus } from '../enum/job-application-status';
 import { EmploymentType } from '../enum/employment.yype';
 import { WorkplaceType } from '../enum/workplace.type';
@@ -103,6 +104,10 @@ export class JobModel {
   @Index('IDX_jobs_coverageScore')
   @Column({ name: 'coverageScore', type: 'int', nullable: true })
   coverageScore?: number;
+
+  /** Metadata del ciclo de vida: idioma, evaluación de fit e historial de estados. */
+  @Column({ name: 'metadata', type: 'jsonb', nullable: true })
+  metadata?: JobMetadata | null;
 
   @Index('IDX_jobs_appliedAt')
   @Column({ name: 'appliedAt', type: 'timestamp', nullable: true })

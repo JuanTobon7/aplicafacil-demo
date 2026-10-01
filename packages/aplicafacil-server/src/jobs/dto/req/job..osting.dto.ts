@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+import type { JobLanguage } from '@aplicafacil/core/domain';
 import {
   IsDate,
   IsOptional,
@@ -71,4 +72,9 @@ export class JobPostingDto {
   @IsOptional()
   @IsString()
   resumePath?: string;
+
+  /** Idioma de la vacante (metadata del ciclo de vida): idioma de respuestas y CV. */
+  @IsOptional()
+  @IsString()
+  language?: JobLanguage;
 }

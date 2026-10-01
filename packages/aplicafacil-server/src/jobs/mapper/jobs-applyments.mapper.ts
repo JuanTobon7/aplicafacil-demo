@@ -11,7 +11,7 @@ export class JobsApplymentsMapper {
    * - Conserva solo el ID de la vacante (view/<id>) para deduplicación.
    * - Si la URL sigue siendo muy larga, la trunca a 2000 caracteres.
    */
-  private static normalizeUrl(rawUrl: string): string {
+  static normalizeUrl(rawUrl: string): string {
     try {
       const url = new URL(rawUrl);
       // Para LinkedIn, conservar solo el path base + ID

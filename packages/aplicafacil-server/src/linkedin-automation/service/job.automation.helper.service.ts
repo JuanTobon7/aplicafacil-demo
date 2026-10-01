@@ -13,6 +13,7 @@ import { LocationDto } from 'src/jobs/dto/helpers/location.dto';
 import { JobMetadataDto } from 'src/jobs/dto/helpers/job.metadata.dto';
 import { JobModel } from 'src/jobs/models/job.model';
 import { PeopleService } from 'src/people/service/contract/people.service';
+import { detectLanguage } from '@aplicafacil/core/domain';
 
 /**
  * Helpers del worker de automatización de empleos.
@@ -64,6 +65,63 @@ export class JobAutomationHelperService {
     const tmpPath = path.join(os.tmpdir(), `aplicafacil-${fileName}`);
     await fs.promises.writeFile(tmpPath, Buffer.from(await response.arrayBuffer()));
     return tmpPath;
+  }
+
+  /**
+   * JobPostingDto listo para postular: incluye el CV y, si la vacante no
+   * quedó ligada a un perfil, el primer perfil de la persona (sin profileId
+   * la IA no puede consultar experiencia, skills ni estudios vía MCP).
+   */
+  async toApplication(job: JobModel): Promise<JobPostingDto> {
+    const posting = this.toJobPosting(job);
+    posting.profileId ??= (await this.resolveProfile(job))?.id;
+    posting.resumePath = await this.resolveResumePath(job);
+    // Idioma guardado en la metadata del ciclo de vida (o detectado al vuelo)
+    posting.language =
+      job.metadata?.language?.code ??
+      detectLanguage(`${job.title}\n${job.description ?? ''}`).code;
+    return posting;
+  }
+
+  /**
+   * Perfil del candidato para la vacante: el ligado a ella o, si no tiene,
+   * el primero de la persona.
+   */
+  async resolveProfile(job: Pick<JobModel, 'profileId' | 'personId' | 'title'>): Promise<ProfileModel | null> {
+    if (job.profileId) {
+      const profile = await this.profileRepository.findOne({ where: { id: job.profileId } });
+      if (profile) return profile;
+    }
+    if (!job.personId) return null;
+    const profile = await this.profileRepository.findOne({
+      where: { people: { id: job.personId } },
+    });
+    if (!profile) this.logger.warn(`Person ${job.personId} has no profile for job "${job.title}"`);
+    return profile;
+  }
+
+  /**
+   * Perfil en texto para embeddings: lo que una vacante afín mencionaría
+   * (cargo, resumen, skills, cargos previos, proyectos, estudios).
+   */
+  profileFitText(profile: ProfileModel): string {
+    const lines = [
+      profile.title,
+      profile.summary,
+      profile.skills?.length
+        ? `Skills: ${profile.skills
+            .map((s) => (s.yearsOfExperience ? `${s.name} (${s.yearsOfExperience} años)` : s.name))
+            .join(', ')}`
+        : '',
+      ...(profile.experiences ?? []).map(
+        (e) => `${e.position} en ${e.companyName}${e.description ? `: ${e.description}` : ''}`,
+      ),
+      ...(profile.projects ?? []).map((p) => `Proyecto ${p.name}: ${p.description}`),
+      ...(profile.educations ?? []).map(
+        (e) => `${e.institutionName}${e.description ? `: ${e.description}` : ''}`,
+      ),
+    ];
+    return lines.filter(Boolean).join('\n');
   }
 
   /**

@@ -19,6 +19,11 @@ export interface DomField {
   required: boolean;
   placeholder?: string;
   options?: DomFieldOption[];
+  maxLength?: number;
+  numeric?: boolean;
+  /** Valor ya escrito que tiene error (el campo se re-envía a la IA para corregirlo). */
+  currentValue?: string;
+  error?: string;
 }
 
 export interface DomSnapshot {
@@ -91,7 +96,13 @@ export function inventoryForm(rootSelector: string): DomInventory {
   const scope: Element = root ?? document.body;
   const clean = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim();
   const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
-  const short = (s: string) => (s.length > 40 ? `${s.slice(0, 40)}…` : s);
+  // Buscadores y header/nav/footer del SITIO no son parte del formulario; los
+  // que están dentro del contenedor sí (el footer del modal tiene "Siguiente").
+  const outsideForm = (el: Element) => {
+    const landmark = el.closest('[role="search"], header, nav, footer');
+    return !!landmark && !(root && root.contains(landmark));
+  };
+  const short =(s: string) => (s.length > 40 ? `${s.slice(0, 40)}…` : s);
   const labelOf = (el: HTMLElement): string => {
     const input = el as HTMLInputElement;
     return clean(
@@ -116,7 +127,7 @@ export function inventoryForm(rootSelector: string): DomInventory {
       if (skipTypes.includes(type)) status = `ignorado (tipo ${type})`;
       else if (input.disabled) status = 'ignorado (disabled)';
       else if (input.readOnly) status = 'ignorado (readonly)';
-      else if (el.closest('[role="search"], header, nav, footer')) status = 'ignorado (header/nav/footer)';
+      else if (outsideForm(el)) status = 'ignorado (header/nav/footer)';
       else if (type === 'radio') status = input.checked ? 'ya marcado' : 'vacío → IA (grupo radio)';
       else if (!visible(el)) status = 'ignorado (no visible)';
       else if (type === 'checkbox') status = input.checked ? 'ya marcado' : 'vacío → IA';
@@ -141,7 +152,7 @@ export function inventoryForm(rootSelector: string): DomInventory {
   const clickables = Array.from(
     scope.querySelectorAll('button, input[type="submit"], [role="button"], a[role="button"]'),
   )
-    .filter(visible)
+    .filter((b) => visible(b) && !outsideForm(b))
     .map((b) => ({
       tag: b.tagName.toLowerCase(),
       text: short(
@@ -190,15 +201,22 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
 
   // Los ids de la foto anterior ya no valen: se re-asignan en cada paso.
   shadowScopes.forEach((s) =>
-    s.querySelectorAll('[data-af-key], [data-af-click]').forEach((el) => {
+    s.querySelectorAll('[data-af-key], [data-af-click], [data-af-option]').forEach((el) => {
       el.removeAttribute('data-af-key');
       el.removeAttribute('data-af-click');
+      el.removeAttribute('data-af-option');
     }),
   );
 
   const clean = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim();
   const visible = (el: Element) => (el as HTMLElement).getClientRects().length > 0;
-  const labelOf = (el: HTMLElement): string => {
+  // Buscadores y header/nav/footer del SITIO no son parte del formulario; los
+  // que están dentro del contenedor sí (el footer del modal tiene "Siguiente").
+  const outsideForm = (el: Element) => {
+    const landmark = el.closest('[role="search"], header, nav, footer');
+    return !!landmark && !(root && root.contains(landmark));
+  };
+  const labelOf =(el: HTMLElement): string => {
     const input = el as HTMLInputElement;
     const labelledBy = el.getAttribute('aria-labelledby');
     const byId = labelledBy
@@ -218,6 +236,15 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
   };
   const isPlaceholderOption = (text: string) =>
     /select|selecciona|seleccione|choose|elige|^-+$/i.test(text);
+  // Texto enlazado por aria-describedby (ayuda o mensaje de validación)
+  const describedText = (el: Element): string =>
+    clean(
+      (el.getAttribute('aria-describedby') ?? '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => (el.getRootNode() as Document | ShadowRoot).getElementById(id)?.textContent ?? '')
+        .join(' '),
+    );
 
   const used = new Set<string>();
   const uniqueKey = (base: string) => {
@@ -245,8 +272,7 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
       tag === 'select' ? 'select' : tag === 'textarea' ? 'textarea' : (input.type || 'text').toLowerCase();
 
     if (skipTypes.includes(type) || input.disabled || input.readOnly) continue;
-    // Buscadores y navegación del sitio no son parte del formulario.
-    if (el.closest('[role="search"], header, nav, footer')) continue;
+    if (outsideForm(el)) continue;
     // La firma solo cuenta lo visible: los pasos ocultos no deben pesar.
     const shown = visible(el) || (input.labels?.[0] ? visible(input.labels[0]) : false);
     if (shown) allNames.push(input.name || el.id || type);
@@ -272,8 +298,30 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
         filled.push({ label: labelOf(el), value: clean(selected.text) });
         continue;
       }
-    } else if (input.value.trim()) {
-      filled.push({ label: labelOf(el), value: input.value.trim().slice(0, 80) });
+    }
+
+    // Restricciones de texto: maxlength o el texto de ayuda ("0 de 20 caracteres")
+    const isText = tag !== 'select' && type !== 'checkbox';
+    const helpText = isText ? describedText(el) : '';
+    // textContent junta "0/20" y "0 de 20 caracteres" → se prioriza "de N caracteres"
+    const limit =
+      /(?:de|of)\s+(\d+)\s+(?:caracteres|characters)/i.exec(helpText) ??
+      /^\d+\s*\/\s*(\d+)$/.exec(helpText);
+    const maxLength = isText ? (input.maxLength > 0 ? input.maxLength : limit ? Number(limit[1]) : undefined) : undefined;
+    const numeric =
+      type === 'number' ||
+      /numeric|decimal/.test(input.inputMode || '') ||
+      /\\d|\[0-9\]/.test(input.getAttribute('pattern') ?? '');
+    const value = isText ? input.value.trim() : '';
+    const invalid =
+      el.getAttribute('aria-invalid') === 'true' ||
+      (maxLength !== undefined && value.length > maxLength) ||
+      (numeric && value !== '' && !/^\d+([.,]\d+)?$/.test(value));
+
+    // Los campos ya llenos (p.ej. email/teléfono precargados) no se tocan,
+    // salvo que tengan error: entonces van a la IA con su id para corregirlos.
+    if (value && !invalid) {
+      filled.push({ label: labelOf(el), value: value.slice(0, 80) });
       continue;
     }
 
@@ -285,6 +333,10 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
       type,
       required: input.required || el.getAttribute('aria-required') === 'true',
       placeholder: input.placeholder || undefined,
+      maxLength,
+      numeric: numeric || undefined,
+      currentValue: value ? value.slice(0, 120) : undefined,
+      error: value ? helpText || undefined : undefined,
       options:
         tag === 'select'
           ? Array.from((el as HTMLSelectElement).options)
@@ -299,23 +351,67 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
     });
   }
 
+  // Texto de una opción de radio. LinkedIn (SDUI) deja el <label> vacío y pinta
+  // el texto ("Yes"/"No") en un hermano: se sube hasta el primer ancestro que
+  // solo contiene este radio y tiene texto. Sin `value` el navegador da "on".
+  const optionLabel = (r: HTMLInputElement): string => {
+    let text = clean(r.labels?.[0]?.innerText);
+    for (let node = r.parentElement; !text && node && node !== scope; node = node.parentElement) {
+      if (node.querySelectorAll('input[type="radio"]').length > 1) break;
+      text = clean(node.innerText);
+    }
+    return text || (r.value !== 'on' ? r.value : '');
+  };
+  // Pregunta del grupo: <legend>, aria-labelledby del grupo, el aria-label
+  // común de los radios (LinkedIn pone ahí la pregunta) o el texto previo.
+  const groupLabel = (radios: HTMLInputElement[]): string => {
+    const container = radios[0].closest('fieldset, [role="radiogroup"]');
+    const labelledBy = container?.getAttribute('aria-labelledby');
+    const byId = labelledBy
+      ? labelledBy
+          .split(/\s+/)
+          .map((id) => (container!.getRootNode() as Document | ShadowRoot).getElementById(id)?.innerText ?? '')
+          .join(' ')
+      : '';
+    const ariaLabels = new Set(radios.map((r) => clean(r.getAttribute('aria-label'))));
+    const sharedAria = ariaLabels.size === 1 ? [...ariaLabels][0] : '';
+    return clean(
+      container?.querySelector('legend')?.innerText ||
+        byId ||
+        sharedAria ||
+        (container?.previousElementSibling as HTMLElement | null)?.innerText,
+    );
+  };
+
   for (const [group, radios] of radioGroups) {
-    const checked = radios.find((r) => r.checked);
-    if (checked) {
-      filled.push({ label: group, value: clean(checked.labels?.[0]?.innerText) || checked.value });
+    const question = groupLabel(radios) || group;
+    const options = radios.map((r) => {
+      const label = optionLabel(r);
+      // El scraper elige la opción por este atributo (value suele ser "on").
+      r.setAttribute('data-af-option', label);
+      return { value: r.value && r.value !== 'on' ? r.value : label, label: label || r.value };
+    });
+    const checked = radios.findIndex((r) => r.checked);
+    if (checked >= 0) {
+      filled.push({ label: question, value: options[checked].label });
       continue;
     }
     const key = uniqueKey(group);
     radios.forEach((r) => r.setAttribute('data-af-key', key));
     fields.push({
       key,
-      label: clean(radios[0].closest('fieldset')?.querySelector('legend')?.innerText) || group,
+      label: question,
       type: 'radio',
-      required: radios.some((r) => r.required || r.getAttribute('aria-required') === 'true'),
-      options: radios.map((r) => {
-        const label = clean(r.labels?.[0]?.innerText);
-        return { value: r.value || label, label: label || r.value };
-      }),
+      required:
+        radios.some((r) => r.required || r.getAttribute('aria-required') === 'true') ||
+        // LinkedIn marca la pregunta con "*" en el texto previo al grupo
+        /\*\s*$/.test(
+          clean(
+            (radios[0].closest('fieldset, [role="radiogroup"]')?.previousElementSibling as HTMLElement | null)
+              ?.innerText,
+          ),
+        ),
+      options,
     });
   }
 
@@ -382,7 +478,7 @@ export function snapshotForm(rootSelector: string): DomSnapshot {
     if (el.tagName === 'LABEL' && !uploadRe.test(lower)) continue;
     if (!isFile && (!visible(el) || !text)) continue;
     if ((el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true') continue;
-    if (el.closest('[role="search"], header, nav, footer')) continue;
+    if (outsideForm(el)) continue;
     if (clickables.length >= 40) break;
 
     const kind: ClickableKind =

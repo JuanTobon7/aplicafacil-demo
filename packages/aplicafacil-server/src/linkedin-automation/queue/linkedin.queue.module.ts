@@ -12,6 +12,7 @@ import { JobRecommendationModule } from '../../jobs/module/job.recommendation.mo
 import { PeopleModule } from '../../people/module/people.module';
 import { ScrapingLinkldnServiceImpl } from '../service/impl/scraping/scraping.linkldn.service.impl';
 import { JobAutomationHelperService } from '../service/job.automation.helper.service';
+import { JobIntakeService } from '../service/job.intake.service';
 
 /**
  * Cola de aplicación de vacantes basada en Redis (listas LPUSH/RPOP).
@@ -39,12 +40,14 @@ import { JobAutomationHelperService } from '../service/job.automation.helper.ser
       useClass: ScrapingLinkldnServiceImpl,
     },
     JobAutomationHelperService,
+    JobIntakeService,
   ],
   exports: [
     JobApplyerQueue,
     QueuePoller,
     'ScrapingLinkldnService',
     JobAutomationHelperService,
+    JobIntakeService,
   ],
 })
 export class LinkedinQueueModule {}

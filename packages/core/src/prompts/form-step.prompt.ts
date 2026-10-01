@@ -1,4 +1,5 @@
 import { FormStepState } from '../domain/job/form-step.js';
+import { JobLanguage } from '../domain/job/lifecycle/job-metadata.js';
 
 export const FORM_STEP_SYSTEM = `
 Eres un agente que completa formularios de postulación laboral PASO A PASO.
@@ -28,6 +29,14 @@ ACCIONES (usa SOLO ids que aparezcan en el paso actual):
 
 REGLAS:
 - Llena todos los campos requeridos que puedas y luego avanza con UN click.
+- FORMATO: respeta "solo números" y "máximo N caracteres". Preguntas de
+  cantidad ("¿cuántos años…?", salario, etc.) se responden SOLO con el número
+  (p.ej. "3"), nunca con una frase.
+- PREGUNTAS de experiencia, años o habilidades (sí/no, numéricas): responde
+  según el perfil del candidato. Si el perfil no lo respalda, responde "No"
+  (o 0 años): nunca exageres la experiencia para pasar el filtro.
+- IDIOMA: escribe los textos libres en el idioma de la vacante. Si el paso
+  ofrece elegir entre varios CV, elige el que esté en ese idioma.
 - Si hay errores de validación, corrige los campos implicados antes de volver a avanzar.
 - Revisa el historial: si un click no avanzó, no repitas lo mismo sin corregir algo.
 - Nunca pulses botones de descartar, cerrar, cancelar, atrás o guardar.
@@ -52,6 +61,11 @@ export const buildFormStepPrompt = (state: FormStepState): string => {
       `- id: "${f.name}" | label: "${f.label}" | tipo: ${f.type}${f.required ? ' | requerido' : ''}`,
     ];
     if (f.placeholder) lines.push(`  placeholder: "${f.placeholder}"`);
+    if (f.numeric) lines.push('  solo números');
+    if (f.maxLength) lines.push(`  máximo ${f.maxLength} caracteres`);
+    if (f.currentValue !== undefined) {
+      lines.push(`  valor actual CON ERROR (reemplázalo): "${f.currentValue}"${f.error ? ` — ${f.error}` : ''}`);
+    }
     const options = f.options ?? [];
     for (const o of limitOptions(options)) {
       lines.push(`  · value: "${o.value}" | label: "${o.label}"`);
@@ -65,6 +79,7 @@ export const buildFormStepPrompt = (state: FormStepState): string => {
 ${candidate.join('\n')}
 
 ## Vacante
+Idioma: ${LANGUAGE_NAMES[state.language ?? 'unknown']}
 Título: ${metadata.title}
 Empresa: ${metadata.company}
 Lugar: ${metadata.location}
@@ -94,6 +109,12 @@ ${state.clickables.length ? state.clickables.map((c) => `- id: "${c.id}" | kind:
 };
 
 const MAX_OPTIONS = 30;
+
+const LANGUAGE_NAMES: Record<JobLanguage, string> = {
+  es: 'español',
+  en: 'inglés',
+  unknown: 'no determinado (usa el idioma de las preguntas del formulario)',
+};
 
 /** Listas largas (p.ej. 200 países): las primeras + Colombia. */
 function limitOptions<T extends { label: string }>(options: T[]): T[] {

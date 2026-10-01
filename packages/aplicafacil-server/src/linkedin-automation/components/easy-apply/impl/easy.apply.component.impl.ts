@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Page } from 'puppeteer';
 import { JobPostingDto } from 'src/jobs/dto/req/job..osting.dto';
-import { EasyApplyComponent } from '../contract/easy.apply.component';
+import { DryRunStopError, EasyApplyComponent } from '../contract/easy.apply.component';
 import { EasyApplyButtonClicker } from '../contract/easy.apply.button.clicker';
 import { HumanBehaviorService } from '../../../common/human-behavior.service';
 import {
@@ -33,9 +33,15 @@ function detectEasyApplyRoot(): string | null {
     }
     return null;
   };
+  // Un modal recién abierto ya trae "Descartar" antes de pintar el formulario:
+  // solo cuenta si tiene campos o un botón para avanzar/enviar.
+  const actionRe = /siguiente|next|continuar|continue|revisar|review|enviar|submit/i;
   const hasForm = (el: Element) =>
     (el as HTMLElement).getClientRects().length > 0 &&
-    !!el.querySelector('input, select, textarea, button');
+    (!!el.querySelector('input:not([type="hidden"]), select, textarea') ||
+      Array.from(el.querySelectorAll('button')).some((b) =>
+        actionRe.test(`${b.innerText} ${b.getAttribute('aria-label') ?? ''}`),
+      ));
 
   const selectors = [
     // Diseño SDUI (2026): <dialog open data-testid="dialog"> nativo con la
@@ -137,6 +143,9 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
 
     this.logOutcome(job, outcome);
 
+    if (outcome.dryRunStopped) {
+      throw new DryRunStopError(`${job.job.title}: ${outcome.reason}`);
+    }
     if (!outcome.submitted) {
       throw new Error(
         `Application for ${job.job.title} was not submitted: ${outcome.reason ?? 'unknown reason'}`,
@@ -263,6 +272,7 @@ export class EasyApplyComponentImpl implements EasyApplyComponent {
       profileId: job.profileId,
       personId: job.personId,
       resumePath: job.resumePath,
+      language: job.language,
     };
   }
 

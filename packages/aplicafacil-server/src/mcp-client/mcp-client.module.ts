@@ -3,9 +3,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import {
   AI_COMPLETION_PORT,
   CHAT_MODEL_PORT,
+  EMBEDDING_PORT,
   TOOL_GATEWAY_PORT,
   ToolCallingAgent,
+  type AiProvider,
   type ChatModelPort,
+  type EmbeddingPort,
   type ToolGatewayPort,
 } from '@aplicafacil/core/application';
 import {
@@ -38,24 +41,19 @@ import { McpClientService } from './mcp-client.service';
       provide: CHAT_MODEL_PORT,
       inject: [ConfigService],
       useFactory: (config: ConfigService): ChatModelPort =>
-        new AiProviderFactory({
-          provider: config.get<string>('LLM_PROVIDER') ?? 'openrouter',
-          openRouter: new OpenRouterAdapter({
-            apiKey: config.get<string>('OPENROUTER_API_KEY') ?? '',
-            baseURL:
-              config.get<string>('OPENROUTER_BASE_URL') ??
-              'https://openrouter.ai/api/v1',
-            model: config.get<string>('OPENROUTER_MODEL'),
-            embeddingModel: config.get<string>('OPENROUTER_EMBEDDING_MODEL'),
-          }),
-          logger: new NestLoggerAdapter('AiProvider'),
-          omniRoute: new OmniRouteAdapter({
-            apiKey: config.get<string>('OMNIROUTE_API_KEY'),
-            baseURL: config.get<string>('OMNIROUTE_BASE_URL'),
-            model: config.get<string>('OMNIROUTE_MODEL'),
-            embeddingModel: config.get<string>('OMNIROUTE_EMBEDDING_MODEL'),
-          }),
-        }).getProvider(),
+        buildAiProvider(config, config.get<string>('LLM_PROVIDER') ?? 'openrouter'),
+    },
+    {
+      // Embeddings (evaluación de vacantes): EMBEDDING_PROVIDER o el mismo del chat
+      provide: EMBEDDING_PORT,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): EmbeddingPort =>
+        buildAiProvider(
+          config,
+          config.get<string>('EMBEDDING_PROVIDER') ??
+            config.get<string>('LLM_PROVIDER') ??
+            'openrouter',
+        ),
     },
     {
       provide: AI_COMPLETION_PORT,
@@ -68,6 +66,28 @@ import { McpClientService } from './mcp-client.service';
         ),
     },
   ],
-  exports: [AI_COMPLETION_PORT, TOOL_GATEWAY_PORT],
+  exports: [AI_COMPLETION_PORT, TOOL_GATEWAY_PORT, EMBEDDING_PORT],
 })
 export class McpClientModule {}
+
+/** Proveedor(es) de IA por nombre ("omniroute", "openrouter,omniroute" = failover). */
+function buildAiProvider(config: ConfigService, provider: string): AiProvider {
+  return new AiProviderFactory({
+    provider,
+    openRouter: new OpenRouterAdapter({
+      apiKey: config.get<string>('OPENROUTER_API_KEY') ?? '',
+      baseURL:
+        config.get<string>('OPENROUTER_BASE_URL') ??
+        'https://openrouter.ai/api/v1',
+      model: config.get<string>('OPENROUTER_MODEL'),
+      embeddingModel: config.get<string>('OPENROUTER_EMBEDDING_MODEL'),
+    }),
+    logger: new NestLoggerAdapter('AiProvider'),
+    omniRoute: new OmniRouteAdapter({
+      apiKey: config.get<string>('OMNIROUTE_API_KEY'),
+      baseURL: config.get<string>('OMNIROUTE_BASE_URL'),
+      model: config.get<string>('OMNIROUTE_MODEL'),
+      embeddingModel: config.get<string>('OMNIROUTE_EMBEDDING_MODEL'),
+    }),
+  }).getProvider();
+}

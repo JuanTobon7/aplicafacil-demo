@@ -1,7 +1,9 @@
 /**
  * Postulación real en DRY RUN de UNA vacante MATCHED: navegador, LinkedIn, LLM y MCP
- * reales, pero se detiene antes de pulsar "Enviar". No arranca la cola ni los crons
- * y NO cambia estados en la BD. Levanta el HTTP en :3000 (el MCP server lo consulta).
+ * reales, pero se detiene antes de pulsar "Enviar". No arranca la cola ni los crons.
+ * Pasa por el mismo JobProcessor que la cola, así que los estados cambian en la BD
+ * como en una postulación real: MATCHED → APPLYING → MATCHED (dry run, vuelve a la
+ * cola) o → APPLICATION_FAILED si algo falla. Levanta el HTTP en :3000 (lo usa el MCP).
  *
  *   npx ts-node --transpile-only -r tsconfig-paths/register scripts/dry-run-apply.ts [jobId|urlFragment]
  */
@@ -23,7 +25,7 @@ import { BrowserManager } from '../src/linkedin-automation/components/browser-ma
 import { AppModule } from '../src/app.module';
 import { ApplyJobProcessor } from '../src/linkedin-automation/worker/apply-job.processor';
 import { JobWorkerAutomation } from '../src/linkedin-automation/worker/job.automation.worker';
-import { JobAutomationHelperService } from '../src/linkedin-automation/service/job.automation.helper.service';
+import { JobProcessor } from '../src/linkedin-automation/worker/job.processor';
 import { JobApplicationStatus } from '../src/jobs/enum/job-application-status';
 
 (async () => {
@@ -39,7 +41,7 @@ import { JobApplicationStatus } from '../src/jobs/enum/job-application-status';
 
   const scraping: any = moduleRef.get('ScrapingLinkldnService', { strict: false });
   const jobs: any = moduleRef.get('JobsService', { strict: false });
-  const helper = moduleRef.get(JobAutomationHelperService, { strict: false });
+  const processor = moduleRef.get(JobProcessor, { strict: false });
 
   const wanted = process.argv[2];
   const matched = await jobs.getJobsByStatus(JobApplicationStatus.MATCHED);
@@ -48,22 +50,30 @@ import { JobApplicationStatus } from '../src/jobs/enum/job-application-status';
   console.log(`\n>>> DRY RUN on: ${job.title} (${job.url}) profileId=${job.profileId} personId=${job.personId}\n`);
 
   try {
-    await scraping.openLinkdlnProfile(helper.getCredentialsLinkdln(), 'apply');
-    await scraping.resolveFillFormAndApply(helper.toJobPosting(job));
-    console.log('\n>>> RESULT: submitted (unexpected in dry run)');
-  } catch (e: any) {
-    console.log(`\n>>> RESULT: ${e.message}`);
-    const page = await moduleRef.get(BrowserManager, { strict: false }).getPage('apply');
-    await page.screenshot({ path: 'dry-run-fail.png' });
-    const html = await page.evaluate(() => {
-      const parts = [document.body.outerHTML];
-      document.querySelectorAll('*').forEach((el) => {
-        if (el.shadowRoot) parts.push(`<!-- SHADOW of ${el.tagName}#${el.id} -->${el.shadowRoot.innerHTML}`);
+    await processor.process({ jobId: job.id, url: job.url, title: job.title });
+
+    const after = await jobs.findJobByUrlAndUser(job.url, job.personId);
+    console.log(`
+>>> STATUS EN BD: ${job.status} → ${after?.status}  (${after?.statusReason ?? ''})`);
+    console.log(`>>> IDIOMA: ${JSON.stringify(after?.metadata?.language)}`);
+    console.log('>>> HISTORIAL:');
+    for (const t of after?.metadata?.history ?? []) {
+      console.log(`    ${t.at}  ${t.from ?? '∅'} → ${t.to}  ${t.reason ?? ''}`);
+    }
+
+    if (after?.status === JobApplicationStatus.APPLICATION_FAILED) {
+      const page = await moduleRef.get(BrowserManager, { strict: false }).getPage('apply');
+      await page.screenshot({ path: 'dry-run-fail.png' });
+      const html = await page.evaluate(() => {
+        const parts = [document.body.outerHTML];
+        document.querySelectorAll('*').forEach((el) => {
+          if (el.shadowRoot) parts.push(`<!-- SHADOW of ${el.tagName}#${el.id} -->${el.shadowRoot.innerHTML}`);
+        });
+        return parts.join('\n');
       });
-      return parts.join('\n');
-    });
-    fs.writeFileSync('dry-run-fail.html', html);
-    console.log('>>> saved dry-run-fail.png / dry-run-fail.html');
+      fs.writeFileSync('dry-run-fail.html', html);
+      console.log('>>> saved dry-run-fail.png / dry-run-fail.html');
+    }
   } finally {
     await scraping.close();
     await app.close();

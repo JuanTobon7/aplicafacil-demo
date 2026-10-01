@@ -1,5 +1,6 @@
 import { FieldDto } from './field.dto.js';
 import { JobMetadataDto } from './job.metadata.dto.js';
+import { JobLanguage } from './lifecycle/job-metadata.js';
 
 /** Tipo de un clickeable según su texto (lo calcula el scraper). */
 export type ClickableKind = 'submit' | 'review' | 'next' | 'upload' | 'other';
@@ -21,6 +22,8 @@ export interface FormStepState {
   metadata: JobMetadataDto;
   profileId?: string;
   personId?: string;
+  /** Idioma de la vacante: guía el idioma de las respuestas y la elección del CV. */
+  language?: JobLanguage;
   /** Nº de paso dentro del formulario (1, 2, …). */
   step: number;
   heading: string;

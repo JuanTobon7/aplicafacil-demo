@@ -58,6 +58,9 @@ export class AiFormFillerImpl implements AiFormFiller {
         return { ...outcome, reason: 'El formulario se cerró antes de enviarse' };
       }
 
+      // Paso aún cargando (sin campos ni botón de avance): esperar antes de preguntar a la IA
+      if (!isActionable(snapshot)) snapshot = await this.waitUntilActionable(page, rootSelector, snapshot);
+
       outcome.steps++;
       await this.logInventory(page, rootSelector);
       const report = new FormStepReport(outcome.steps, rootSelector, snapshot);
@@ -71,6 +74,7 @@ export class AiFormFillerImpl implements AiFormFiller {
           metadata: ctx.metadata,
           profileId: ctx.profileId,
           personId: ctx.personId,
+          language: ctx.language,
           step: outcome.steps,
           heading: snapshot.heading,
           fields: snapshot.fields.map((f) => ({
@@ -80,6 +84,10 @@ export class AiFormFillerImpl implements AiFormFiller {
             required: f.required,
             placeholder: f.placeholder,
             options: f.options,
+            maxLength: f.maxLength,
+            numeric: f.numeric,
+            currentValue: f.currentValue,
+            error: f.error,
           })),
           filled: snapshot.filled,
           clickables: snapshot.clickables,
@@ -111,7 +119,7 @@ export class AiFormFillerImpl implements AiFormFiller {
           if (clicked.kind === 'submit' && this.dryRun) {
             const reason = `DRY RUN: listo para enviar, no se pulsa "${clicked.text}"`;
             this.logger.warn(report.result(`⏸ ${reason}`));
-            return { ...outcome, reason };
+            return { ...outcome, reason, dryRunStopped: true };
           }
           if (await this.click(page, clicked, report)) done.push(`click "${clicked.text}"`);
           else clicked = undefined;
@@ -217,6 +225,19 @@ export class AiFormFillerImpl implements AiFormFiller {
     return true;
   }
 
+  /** Re-toma la foto hasta que el paso tenga algo que hacer (máx. ~12 s). */
+  private async waitUntilActionable(
+    page: Page,
+    rootSelector: string,
+    snapshot: DomSnapshot,
+  ): Promise<DomSnapshot> {
+    for (let i = 0; i < 6 && snapshot.rootFound && !snapshot.success && !isActionable(snapshot); i++) {
+      await this.human.wait(1500, 2500);
+      snapshot = await this.snapshot(page, rootSelector);
+    }
+    return snapshot;
+  }
+
   /**
    * Toma la foto del formulario. Reintenta si la página está navegando
    * (el contexto de ejecución se destruye durante la navegación).
@@ -307,13 +328,19 @@ export class AiFormFillerImpl implements AiFormFiller {
           const matches = await radio.evaluate(
             (el, v) => {
               const input = el as HTMLInputElement;
-              const label = (input.labels?.[0]?.innerText ?? '').replace(/\s+/g, ' ').trim();
-              return input.value === v || label === v;
+              // data-af-option: texto de la opción calculado en snapshotForm
+              const label = input.getAttribute('data-af-option') ?? '';
+              return (input.value !== 'on' && input.value === v) || label === v;
             },
             value,
           );
           if (matches) {
             await this.clickInputOrLabel(radio);
+            // El <label> de LinkedIn puede estar vacío (sin área clickeable): verificar
+            const isChecked = (r: ElementHandle<Element>) =>
+              r.evaluate((el) => (el as HTMLInputElement).checked);
+            if (!(await isChecked(radio))) await radio.evaluate((el) => (el as HTMLInputElement).click());
+            if (!(await isChecked(radio))) throw new Error(`la opción "${value}" no quedó marcada`);
             report.action('click', `radio ${field.key}`, `→ ${quote(value)}`);
             return;
           }
@@ -337,6 +364,13 @@ export class AiFormFillerImpl implements AiFormFiller {
         if (!input) throw new Error('campo no encontrado');
         await this.human.wait();
         await input.click();
+        // Campo con valor erróneo: se borra antes de escribir (type() añade al final)
+        if (field.currentValue !== undefined) {
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await page.keyboard.press('Backspace');
+        }
         await input.type(value, { delay: await this.human.typeDelay() });
         report.action('type', field.key, `← ${quote(value)}`);
 
@@ -362,6 +396,11 @@ export class AiFormFillerImpl implements AiFormFiller {
     );
     await this.human.clickElement(label as ElementHandle<Element>);
   }
+}
+
+/** El paso tiene campos por llenar o un botón para avanzar / subir CV. */
+function isActionable(s: DomSnapshot): boolean {
+  return s.fields.length > 0 || s.clickables.some((c) => c.kind !== 'other');
 }
 
 function addOnce(list: string[], item: string): void {

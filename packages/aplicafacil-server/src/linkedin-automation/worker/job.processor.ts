@@ -1,15 +1,16 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ScrapingLinkldnService } from '../service/contract/scraping.linkldn.service';
-import { JobsService } from 'src/jobs/service/contract/jobs.service';
-import { JobApplicationStatus } from 'src/jobs/enum/job-application-status';
+import { JobLifecycleService } from 'src/jobs/service/impl/job.lifecycle.service';
 import { JobAutomationHelperService } from '../service/job.automation.helper.service';
 import { JobModel } from 'src/jobs/models/job.model';
 import { ApplyJobData } from './apply-job.types';
+import { DryRunStopError } from '../components/easy-apply/contract/easy.apply.component';
 
 /**
  * Procesa un trabajo individual: claim → apply → mark as applied.
  *
- * Encapsula la lógica de negocio de aplicar a una vacante.
+ * Los cambios de estado pasan por el patrón State (JobLifecycleService):
+ * MATCHED → APPLYING → APPLIED | APPLICATION_FAILED.
  */
 @Injectable()
 export class JobProcessor {
@@ -18,8 +19,7 @@ export class JobProcessor {
   constructor(
     @Inject('ScrapingLinkldnService')
     private readonly scrapingLinkldnService: ScrapingLinkldnService,
-    @Inject('JobsService')
-    private readonly jobsService: JobsService,
+    private readonly lifecycle: JobLifecycleService,
     private readonly helper: JobAutomationHelperService,
   ) {}
 
@@ -40,8 +40,14 @@ export class JobProcessor {
 
     try {
       await this.applyToJob(claimed);
-      await this.markAsApplied(claimed.id, title);
+      await this.markAsApplied(claimed, title);
     } catch (error) {
+      if (error instanceof DryRunStopError) {
+        // Dry run: el formulario quedó listo pero no se envió → vuelve a la cola
+        this.logger.warn(`[Queue] ${error.message}`);
+        await this.lifecycle.recover(claimed, error.message);
+        return;
+      }
       // La aplicación falló (sin botón Easy Apply, formulario no enviado, etc.)
       // NO marcar APPLIED. Marcar APPLICATION_FAILED para no re-procesar.
       this.logger.error(
@@ -49,9 +55,8 @@ export class JobProcessor {
           error instanceof Error ? error.message : error
         }`,
       );
-      await this.jobsService.updateStatusJob(
-        claimed.id,
-        JobApplicationStatus.APPLICATION_FAILED,
+      await this.lifecycle.failed(
+        claimed,
         `Auto-aplicación falló: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -67,12 +72,7 @@ export class JobProcessor {
     jobId: string,
     title: string,
   ): Promise<JobModel | null> {
-    const claimed = await this.jobsService.claimJob(
-      jobId,
-      JobApplicationStatus.MATCHED,
-      JobApplicationStatus.APPLYING,
-      { automationUserId: 'queue-worker' },
-    );
+    const claimed = await this.lifecycle.claim(jobId);
 
     if (!claimed) {
       this.logger.warn(
@@ -87,20 +87,15 @@ export class JobProcessor {
    * Ejecuta el flujo de Easy Apply sobre la vacante reclamada.
    */
   private async applyToJob(job: JobModel): Promise<void> {
-    const posting = this.helper.toJobPosting(job);
-    posting.resumePath = await this.helper.resolveResumePath(job);
+    const posting = await this.helper.toApplication(job);
     await this.scrapingLinkldnService.resolveFillFormAndApply(posting);
   }
 
   /**
    * Marca la vacante como APPLIED tras una aplicación exitosa.
    */
-  private async markAsApplied(jobId: string, title: string): Promise<void> {
-    await this.jobsService.updateStatusJob(
-      jobId,
-      JobApplicationStatus.APPLIED,
-      'Auto-aplicación completada (cola)',
-    );
+  private async markAsApplied(job: JobModel, title: string): Promise<void> {
+    await this.lifecycle.applied(job, 'Auto-aplicación completada (cola)');
     this.logger.log(`[Queue] Successfully applied to: ${title}`);
   }
 }
